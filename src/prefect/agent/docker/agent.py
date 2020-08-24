@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Dict, Iterable, List, Tuple
 
 from prefect import config, context
 from prefect.agent import Agent
-from prefect.utilities.agent import get_flow_image
+from prefect.utilities.agent import get_flow_image, get_flow_run_command
 from prefect.utilities.docker_util import get_docker_ip
 from prefect.utilities.graphql import GraphQLResult
 
@@ -58,6 +58,8 @@ class DockerAgent(Agent):
         - docker_interface (bool, optional): Toggle whether or not a `docker0` interface is
             present on this machine.  Defaults to `True`. **Note**: This is mostly relevant for
             some Docker-in-Docker setups that users may be running their agent with.
+        - reg_allow_list (List[str], optional): Limits Docker Agent to only pull images
+            from the listed registries.
     """
 
     def __init__(
@@ -74,6 +76,7 @@ class DockerAgent(Agent):
         show_flow_logs: bool = False,
         network: str = None,
         docker_interface: bool = True,
+        reg_allow_list: List[str] = None,
     ) -> None:
         super().__init__(
             name=name,
@@ -119,6 +122,9 @@ class DockerAgent(Agent):
         self.docker_client = self._get_docker_client()
         self.show_flow_logs = show_flow_logs
         self.processes = []  # type: List[multiprocessing.Process]
+
+        self.reg_allow_list = reg_allow_list
+        self.logger.debug("reg_allow_list set to {}".format(self.reg_allow_list))
 
         # Ping Docker daemon for connection issues
         try:
@@ -330,11 +336,21 @@ class DockerAgent(Agent):
 
         if not self.no_pull and len(image.split("/")) > 1:
             self.logger.info("Pulling image {}...".format(image))
-
-            pull_output = self.docker_client.pull(image, stream=True, decode=True)
-            for line in pull_output:
-                self.logger.debug(line)
-            self.logger.info("Successfully pulled image {}...".format(image))
+            registry = image.split("/")[0]
+            if self.reg_allow_list and registry not in self.reg_allow_list:
+                self.logger.error(
+                    "Trying to pull image from a Docker registry '{}' which"
+                    " is not in the reg_allow_list".format(registry)
+                )
+                raise ValueError(
+                    "Trying to pull image from a Docker registry '{}' which"
+                    " is not in the reg_allow_list".format(registry)
+                )
+            else:
+                pull_output = self.docker_client.pull(image, stream=True, decode=True)
+                for line in pull_output:
+                    self.logger.debug(line)
+                self.logger.info("Successfully pulled image {}...".format(image))
 
         # Create any named volumes (if they do not already exist)
         for named_volume_name in self.named_volumes:
@@ -368,7 +384,7 @@ class DockerAgent(Agent):
 
         container = self.docker_client.create_container(
             image,
-            command="prefect execute cloud-flow",
+            command=get_flow_run_command(flow_run),
             environment=env_vars,
             volumes=container_mount_paths,
             host_config=self.docker_client.create_host_config(**host_config),
@@ -434,7 +450,7 @@ class DockerAgent(Agent):
             "PREFECT__CONTEXT__FLOW_ID": flow_run.flow.id,  # type: ignore
             "PREFECT__CLOUD__USE_LOCAL_SECRETS": "false",
             "PREFECT__LOGGING__LOG_TO_CLOUD": str(self.log_to_cloud).lower(),
-            "PREFECT__LOGGING__LEVEL": "DEBUG",
+            "PREFECT__LOGGING__LEVEL": config.logging.level,
             "PREFECT__ENGINE__FLOW_RUNNER__DEFAULT_CLASS": "prefect.engine.cloud.CloudFlowRunner",
             "PREFECT__ENGINE__TASK_RUNNER__DEFAULT_CLASS": "prefect.engine.cloud.CloudTaskRunner",
             **self.env_vars,

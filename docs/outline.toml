@@ -170,7 +170,7 @@ classes = ["PrefectResult", "GCSResult", "LocalResult", "S3Result", "AzureResult
 [pages.engine.serializers]
 title = "Result Serializers"
 module = "prefect.engine.serializers"
-classes = ["Serializer", "PickleSerializer", "JSONSerializer"]
+classes = ["Serializer", "PickleSerializer", "JSONSerializer", "PandasSerializer"]
 
 [pages.engine.result_handlers]
 title = "Result Handlers"
@@ -306,9 +306,10 @@ classes = [
         "GCSUpload",
         "GCSCopy",
         "BigQueryTask",
-        "BigQueryLoadGoogleCloudStorage",
         "BigQueryStreamingInsert",
-        "CreateBigQueryTable"
+        "CreateBigQueryTable",
+        "BigQueryLoadGoogleCloudStorage",
+        "BigQueryLoadFile"
         ]
 
 [pages.tasks.great_expectations]
@@ -365,6 +366,11 @@ classes = ["SecretBase", "PrefectSecret", "EnvVarSecret"]
 title = "Snowflake Tasks"
 module = "prefect.tasks.snowflake"
 classes = ["SnowflakeQuery"]
+
+[pages.tasks.databricks]
+title = "Databricks Tasks"
+module = "prefect.contrib.tasks.databricks"
+classes = ["DatabricksSubmitRun"]
 
 [pages.tasks.spacy]
 title = "spaCy Tasks"
@@ -520,5 +526,11 @@ functions = ["to_qualified_name", "from_qualified_name"]
 [pages.utilities.tasks]
 title = "Task Utilities"
 module = "prefect.utilities.tasks"
-classes = ["unmapped"]
+classes = []
 functions = ["tags", "as_task", "pause_task", "task", "defaults_from_attrs", "apply_map"]
+
+[pages.utilities.edges]
+title = "Edge Utilities"
+module = "prefect.utilities.edges"
+classes = ["unmapped", "mapped", "flatten"]
+functions = []

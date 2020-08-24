@@ -73,11 +73,11 @@ def server():
 
     \b
     Usage:
-        $ prefect server ...
+        $ prefect server [COMMAND]
 
     \b
     Arguments:
-        start   ...
+        start                   Start the Prefect Core server using docker-compose
 
     \b
     Examples:
@@ -90,7 +90,13 @@ def server():
 @click.option(
     "--version",
     "-v",
-    help="The server image versions to use (for example, '0.10.0' or 'master')",
+    help="The server image versions to use (for example, '0.1.0' or 'master')",
+    hidden=True,
+)
+@click.option(
+    "--ui-version",
+    "-uv",
+    help="The UI image version to use (for example, '0.1.0' or 'master')",
     hidden=True,
 )
 @click.option(
@@ -190,6 +196,7 @@ def server():
 )
 def start(
     version,
+    ui_version,
     skip_pull,
     no_upgrade,
     no_ui,
@@ -211,8 +218,10 @@ def start(
 
     \b
     Options:
-        --version, -v       TEXT    The server image versions to use (for example, '0.10.0' or
-                                    'master'). Defaults to the current installed Prefect version.
+        --version, -v       TEXT    The server image versions to use (for example, '0.1.0' or
+                                    'master'). Defaults to `latest`.
+        --ui-version, -uv   TEXT    The UI image version to use (for example, '0.1.0' or
+                                    'master'). Defaults to `latest`.
         --skip-pull                 Flag to skip pulling new images (if available)
         --no-upgrade, -n            Flag to avoid running a database upgrade when the database
                                     spins up
@@ -249,6 +258,7 @@ def start(
         or no_ui_port
         or no_server_port
         or not use_volume
+        or no_ui
     ):
         temp_dir = tempfile.gettempdir()
         temp_path = os.path.join(temp_dir, "docker-compose.yml")
@@ -275,6 +285,9 @@ def start(
             if not use_volume:
                 del y["services"]["postgres"]["volumes"]
 
+            if no_ui:
+                del y["services"]["ui"]
+
         with open(temp_path, "w") as f:
             y = yaml.safe_dump(y, f)
 
@@ -294,14 +307,9 @@ def start(
         env = make_env()
 
     if "PREFECT_SERVER_TAG" not in env:
-        env.update(
-            PREFECT_SERVER_TAG=version
-            or (
-                "master"
-                if len(prefect.__version__.split("+")) > 1
-                else prefect.__version__
-            )
-        )
+        env.update(PREFECT_SERVER_TAG=version or "latest")
+    if "PREFECT_UI_TAG" not in env:
+        env.update(PREFECT_UI_TAG=ui_version or "latest")
     if "PREFECT_SERVER_DB_CMD" not in env:
         cmd = (
             "prefect-server database upgrade -y"
@@ -318,11 +326,29 @@ def start(
             )
 
         cmd = ["docker-compose", "up"]
-        if no_ui:
-            cmd += ["--scale", "ui=0"]
         proc = subprocess.Popen(cmd, cwd=compose_dir_path, env=env)
-        while True:
-            time.sleep(0.5)
+        started = False
+        with prefect.utilities.configuration.set_temporary_config(
+            {
+                "cloud.api": "http://localhost:4200",
+                "cloud.graphql": "http://localhost:4200/graphql",
+                "backend": "server",
+            }
+        ):
+            while not started:
+                try:
+                    client = prefect.Client()
+                    client.graphql("query{hello}", retry_on_api_error=False)
+                    started = True
+                    # Create a default tenant if no tenant exists
+                    if not client.get_available_tenants():
+                        client.create_tenant(name="default")
+                    print(ascii_welcome(ui_port=str(ui_port)))
+                except Exception:
+                    time.sleep(0.5)
+                    pass
+            while True:
+                time.sleep(0.5)
     except BaseException:
         click.secho(
             "Exception caught; killing services (press ctrl-C to force)",
@@ -335,3 +361,52 @@ def start(
         if proc:
             proc.kill()
         raise
+
+
+def ascii_welcome(ui_port="8080"):
+    ui_url = click.style(
+        f"https://localhost:{ui_port}", fg="white", bg="blue", bold=True
+    )
+    docs_url = click.style("https://docs.prefect.io", fg="white", bg="blue", bold=True)
+
+    title = r"""
+   _____  _____  ______ ______ ______ _____ _______    _____ ______ _______      ________ _____
+  |  __ \|  __ \|  ____|  ____|  ____/ ____|__   __|  / ____|  ____|  __ \ \    / /  ____|  __ \
+  | |__) | |__) | |__  | |__  | |__ | |       | |    | (___ | |__  | |__) \ \  / /| |__  | |__) |
+  |  ___/|  _  /|  __| |  __| |  __|| |       | |     \___ \|  __| |  _  / \ \/ / |  __| |  _  /
+  | |    | | \ \| |____| |    | |___| |____   | |     ____) | |____| | \ \  \  /  | |____| | \ \
+  |_|    |_|  \_\______|_|    |______\_____|  |_|    |_____/|______|_|  \_\  \/   |______|_|  \_\
+
+    """
+
+    message = f"""
+                                            {click.style('WELCOME TO', fg='blue', bold=True)}
+  {click.style(title, bold=True)}
+   Visit {ui_url} to get started, or check out the docs at {docs_url}
+    """
+
+    return message
+
+
+@server.command(hidden=True)
+@click.option(
+    "--name", "-n", help="The name of a tenant to create", hidden=True,
+)
+@click.option(
+    "--slug", "-s", help="The slug of a tenant to create", hidden=True,
+)
+def create_tenant(
+    name, slug,
+):
+    """
+    This command creates a tenant for the Prefect Server
+
+    \b
+    Options:
+        --name, -n       TEXT    The name of a tenant to create
+        --slug, -n       TEXT    The slug of a tenant to create
+    """
+    client = prefect.Client()
+    tenant_id = client.create_tenant(name=name, slug=slug)
+
+    click.secho(f"Tenant created with ID: {tenant_id}", fg="green")

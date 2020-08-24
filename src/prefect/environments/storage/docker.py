@@ -56,7 +56,7 @@ class Docker(Storage):
         - env_vars (dict, optional): a dictionary of environment variables to
             use when building
         - files (dict, optional): a dictionary of files to copy into the image
-            when building
+            when building. Takes the format of `{'src': 'dest'}`
         - prefect_version (str, optional): an optional branch, tag, or commit
             specifying the version of prefect you want installed into the container;
             defaults to the version you are currently using or `"master"` if your
@@ -249,17 +249,29 @@ class Docker(Storage):
         self._flows[flow.name] = flow  # needed prior to build
         return flow_path
 
-    def get_flow(self, flow_location: str) -> "prefect.core.flow.Flow":
+    def get_flow(self, flow_location: str = None) -> "prefect.core.flow.Flow":
         """
         Given a file path within this Docker container, returns the underlying Flow.
         Note that this method should only be run _within_ the container itself.
 
         Args:
-            - flow_location (str): the file path of a flow within this container
+            - flow_location (str, optional): the file path of a flow within this container. Will use
+                `path` if not provided.
 
         Returns:
             - Flow: the requested flow
+
+        Raises:
+            - ValueError: if the flow is not contained in this storage
         """
+        if flow_location:
+            if flow_location not in self.flows.values():
+                raise ValueError("Flow is not contained in this Storage")
+        elif self.path:
+            flow_location = self.path
+        else:
+            raise ValueError("No flow location provided")
+
         if self.stored_as_script:
             return extract_flow_from_file(file_path=flow_location)
 
@@ -340,10 +352,6 @@ class Docker(Storage):
             dir="." if self.dockerfile else None
         ) as tempdir:
 
-            if sys.platform == "win32":
-                # problem with docker and relative paths only on windows
-                tempdir = os.path.abspath(tempdir)
-
             # Build the dockerfile
             if self.base_image and not self.local_image:
                 self.pull_image()
@@ -366,6 +374,11 @@ class Docker(Storage):
 
             # Use the docker client to build the image
             self.logger.info("Building the flow's Docker storage...")
+
+            if sys.platform == "win32":
+                # problem with docker and relative paths only on windows
+                dockerfile_path = os.path.abspath(dockerfile_path)
+
             output = client.build(
                 path="." if self.dockerfile else tempdir,
                 dockerfile=dockerfile_path,
@@ -375,7 +388,7 @@ class Docker(Storage):
             )
             self._parse_generator_output(output)
 
-            if len(client.images(name=full_name)) == 0:
+            if len(client.images(name="{}:{}".format(full_name, self.image_tag))) == 0:
                 raise ValueError(
                     "Your docker image failed to build!  Your flow might have "
                     "failed one of its deployment health checks - please ensure "
@@ -444,7 +457,8 @@ class Docker(Storage):
                 else:
                     shutil.copy2(src, full_fname)
                 copy_files += "COPY {fname} {dest}\n".format(
-                    fname=full_fname if self.dockerfile else fname, dest=dest
+                    fname=full_fname.replace("\\", "/") if self.dockerfile else fname,
+                    dest=dest,
                 )
 
         # Write all flows to file and load into the image
@@ -456,7 +470,7 @@ class Docker(Storage):
                 with open(flow_path, "wb") as f:
                     cloudpickle.dump(self._flows[flow_name], f)
                 copy_flows += "COPY {source} {dest}\n".format(
-                    source=flow_path
+                    source=flow_path.replace("\\", "/")
                     if self.dockerfile
                     else "{}.flow".format(clean_name),
                     dest=flow_location,
@@ -507,7 +521,7 @@ class Docker(Storage):
                 extra_commands=extra_commands,
                 pip_installs=pip_installs,
                 copy_flows=copy_flows,
-                healthcheck_loc=healthcheck_loc
+                healthcheck_loc=healthcheck_loc.replace("\\", "/")
                 if self.dockerfile
                 else "healthcheck.py",
                 copy_files=copy_files,

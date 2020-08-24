@@ -2,6 +2,7 @@ import prefect.utilities
 from prefect.configuration import config
 
 from prefect.utilities.context import context
+from prefect.utilities.plugins import API as api, PLUGINS as plugins, MODELS as models
 
 from prefect.client import Client
 import prefect.schedules
@@ -13,10 +14,11 @@ import prefect.engine
 import prefect.tasks
 from prefect.tasks.control_flow import case
 from prefect.tasks.core.resource_manager import resource_manager
-from prefect.utilities.tasks import task, tags, unmapped, apply_map
+
+from prefect.utilities.tasks import task, tags, apply_map
+from prefect.utilities.edges import mapped, unmapped, flatten
 
 import prefect.serialization
-
 import prefect.agent
 
 from ._version import get_versions

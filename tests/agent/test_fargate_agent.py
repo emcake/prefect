@@ -14,7 +14,7 @@ pytest.importorskip("botocore")
 from botocore.exceptions import ClientError
 
 
-def test_fargate_agent_init(monkeypatch, runner_token):
+def test_fargate_agent_init(monkeypatch, cloud_api):
     boto3_client = MagicMock()
     monkeypatch.setattr("boto3.client", boto3_client)
 
@@ -23,7 +23,7 @@ def test_fargate_agent_init(monkeypatch, runner_token):
     assert agent.boto3_client
 
 
-def test_fargate_agent_config_options_default(monkeypatch, runner_token):
+def test_fargate_agent_config_options_default(monkeypatch, cloud_api):
     boto3_client = MagicMock()
     monkeypatch.setattr("boto3.client", boto3_client)
 
@@ -36,7 +36,7 @@ def test_fargate_agent_config_options_default(monkeypatch, runner_token):
     assert agent.boto3_client
 
 
-def test_fargate_agent_config_options(monkeypatch, runner_token):
+def test_fargate_agent_config_options(monkeypatch, cloud_api):
     boto3_client = MagicMock()
     monkeypatch.setattr("boto3.client", boto3_client)
 
@@ -73,7 +73,7 @@ def test_fargate_agent_config_options(monkeypatch, runner_token):
         assert botocore_config.call_args == {}
 
 
-def test_parse_task_definition_kwargs(monkeypatch, runner_token):
+def test_parse_task_definition_kwargs(monkeypatch, cloud_api):
     boto3_client = MagicMock()
     monkeypatch.setattr("boto3.client", boto3_client)
 
@@ -103,7 +103,7 @@ def test_parse_task_definition_kwargs(monkeypatch, runner_token):
     assert task_run_kwargs == {"placementConstraints": "test", "tags": "test"}
 
 
-def test_parse_task_definition_kwargs_errors(monkeypatch, runner_token):
+def test_parse_task_definition_kwargs_errors(monkeypatch, cloud_api):
     boto3_client = MagicMock()
     monkeypatch.setattr("boto3.client", boto3_client)
 
@@ -125,7 +125,7 @@ def test_parse_task_definition_kwargs_errors(monkeypatch, runner_token):
     }
 
 
-def test_parse_task_run_kwargs(monkeypatch, runner_token):
+def test_parse_task_run_kwargs(monkeypatch, cloud_api):
     boto3_client = MagicMock()
     monkeypatch.setattr("boto3.client", boto3_client)
 
@@ -155,7 +155,7 @@ def test_parse_task_run_kwargs(monkeypatch, runner_token):
     assert task_definition_kwargs == {"placementConstraints": "test", "tags": "test"}
 
 
-def test_parse_container_definition_kwargs(monkeypatch, runner_token):
+def test_parse_container_definition_kwargs(monkeypatch, cloud_api):
     boto3_client = MagicMock()
     monkeypatch.setattr("boto3.client", boto3_client)
 
@@ -188,9 +188,7 @@ def test_parse_container_definition_kwargs(monkeypatch, runner_token):
     }
 
 
-def test_parse_container_definition_kwargs_provided_as_string(
-    monkeypatch, runner_token
-):
+def test_parse_container_definition_kwargs_provided_as_string(monkeypatch, cloud_api):
     boto3_client = MagicMock()
     monkeypatch.setattr("boto3.client", boto3_client)
 
@@ -225,9 +223,7 @@ def test_parse_container_definition_kwargs_provided_as_string(
     }
 
 
-def test_parse_container_definition_kwargs_errors_on_multiple(
-    monkeypatch, runner_token
-):
+def test_parse_container_definition_kwargs_errors_on_multiple(monkeypatch, cloud_api):
     boto3_client = MagicMock()
     monkeypatch.setattr("boto3.client", boto3_client)
 
@@ -254,7 +250,7 @@ def test_parse_container_definition_kwargs_errors_on_multiple(
         ) = agent._parse_kwargs(kwarg_dict)
 
 
-def test_parse_container_definition_kwargs_errors(monkeypatch, runner_token):
+def test_parse_container_definition_kwargs_errors(monkeypatch, cloud_api):
     boto3_client = MagicMock()
     monkeypatch.setattr("boto3.client", boto3_client)
 
@@ -289,7 +285,7 @@ def test_parse_container_definition_kwargs_errors(monkeypatch, runner_token):
     }
 
 
-def test_parse_task_definition_and_run_kwargs(monkeypatch, runner_token):
+def test_parse_task_definition_and_run_kwargs(monkeypatch, cloud_api):
     boto3_client = MagicMock()
     monkeypatch.setattr("boto3.client", boto3_client)
 
@@ -356,7 +352,7 @@ def test_parse_task_definition_and_run_kwargs(monkeypatch, runner_token):
     assert task_run_kwargs == run_kwarg_dict
 
 
-def test_parse_task_kwargs_invalid_value_removed(monkeypatch, runner_token):
+def test_parse_task_kwargs_invalid_value_removed(monkeypatch, cloud_api):
     boto3_client = MagicMock()
     monkeypatch.setattr("boto3.client", boto3_client)
 
@@ -375,7 +371,7 @@ def test_parse_task_kwargs_invalid_value_removed(monkeypatch, runner_token):
     assert container_definitions_kwargs == {}
 
 
-def test_fargate_agent_config_options_init(monkeypatch, runner_token):
+def test_fargate_agent_config_options_init(monkeypatch, cloud_api):
     boto3_client = MagicMock()
     monkeypatch.setattr("boto3.client", boto3_client)
 
@@ -473,7 +469,7 @@ def test_fargate_agent_config_options_init(monkeypatch, runner_token):
     assert botocore_config.call_args[1] == {"test": "config"}
 
 
-def test_fargate_agent_config_env_vars(monkeypatch, runner_token):
+def test_fargate_agent_config_env_vars(monkeypatch, cloud_api):
     boto3_client = MagicMock()
     monkeypatch.setattr("boto3.client", boto3_client)
 
@@ -563,7 +559,7 @@ def test_fargate_agent_config_env_vars(monkeypatch, runner_token):
     assert botocore_config.call_args == {}
 
 
-def test_fargate_agent_config_env_vars_lists_dicts(monkeypatch, runner_token):
+def test_fargate_agent_config_env_vars_lists_dicts(monkeypatch, cloud_api):
     boto3_client = MagicMock()
     monkeypatch.setattr("boto3.client", boto3_client)
 
@@ -625,7 +621,7 @@ def test_fargate_agent_config_env_vars_lists_dicts(monkeypatch, runner_token):
     assert botocore_config.call_args == {}
 
 
-def test_deploy_flow_local_storage_raises(monkeypatch, runner_token):
+def test_deploy_flow_local_storage_raises(monkeypatch, cloud_api):
     boto3_client = MagicMock()
 
     boto3_client.describe_task_definition.return_value = {}
@@ -644,6 +640,7 @@ def test_deploy_flow_local_storage_raises(monkeypatch, runner_token):
                             "storage": Local().serialize(),
                             "id": "id",
                             "environment": LocalEnvironment().serialize(),
+                            "core_version": "0.13.0",
                         }
                     ),
                     "id": "id",
@@ -655,7 +652,7 @@ def test_deploy_flow_local_storage_raises(monkeypatch, runner_token):
     assert not boto3_client.run_task.called
 
 
-def test_deploy_flow_docker_storage_raises(monkeypatch, runner_token):
+def test_deploy_flow_docker_storage_raises(monkeypatch, cloud_api):
     boto3_client = MagicMock()
 
     boto3_client.describe_task_definition.return_value = {}
@@ -674,6 +671,7 @@ def test_deploy_flow_docker_storage_raises(monkeypatch, runner_token):
                         ).serialize(),
                         "environment": LocalEnvironment().serialize(),
                         "id": "id",
+                        "core_version": "0.13.0",
                     }
                 ),
                 "id": "id",
@@ -686,7 +684,7 @@ def test_deploy_flow_docker_storage_raises(monkeypatch, runner_token):
     assert boto3_client.run_task.called
 
 
-def test_deploy_flow_all_args(monkeypatch, runner_token):
+def test_deploy_flow_all_args(monkeypatch, cloud_api):
     boto3_client = MagicMock()
 
     boto3_client.describe_task_definition.return_value = {}
@@ -740,6 +738,7 @@ def test_deploy_flow_all_args(monkeypatch, runner_token):
                         ).serialize(),
                         "environment": LocalEnvironment().serialize(),
                         "id": "id",
+                        "core_version": "0.13.0",
                     }
                 ),
                 "id": "id",
@@ -773,7 +772,7 @@ def test_deploy_flow_all_args(monkeypatch, runner_token):
     }
 
 
-def test_deploy_flow_register_task_definition(monkeypatch, runner_token):
+def test_deploy_flow_register_task_definition(monkeypatch, cloud_api):
     boto3_client = MagicMock()
 
     boto3_client.describe_task_definition.side_effect = ClientError({}, None)
@@ -793,6 +792,7 @@ def test_deploy_flow_register_task_definition(monkeypatch, runner_token):
                         ).serialize(),
                         "environment": LocalEnvironment().serialize(),
                         "id": "id",
+                        "core_version": "0.13.0",
                     }
                 ),
                 "id": "id",
@@ -809,7 +809,7 @@ def test_deploy_flow_register_task_definition(monkeypatch, runner_token):
 
 
 def test_deploy_flow_register_task_definition_uses_environment_metadata(
-    monkeypatch, runner_token
+    monkeypatch, cloud_api
 ):
     boto3_client = MagicMock()
 
@@ -830,6 +830,7 @@ def test_deploy_flow_register_task_definition_uses_environment_metadata(
                             metadata={"image": "repo/name:tag"}
                         ).serialize(),
                         "id": "id",
+                        "core_version": "0.13.0",
                     }
                 ),
                 "id": "id",
@@ -852,7 +853,7 @@ def test_deploy_flow_register_task_definition_uses_environment_metadata(
 
 
 def test_deploy_flow_register_task_definition_uses_user_env_vars(
-    monkeypatch, runner_token
+    monkeypatch, cloud_api
 ):
     boto3_client = MagicMock()
 
@@ -873,6 +874,7 @@ def test_deploy_flow_register_task_definition_uses_user_env_vars(
                         ).serialize(),
                         "environment": LocalEnvironment().serialize(),
                         "id": "id",
+                        "core_version": "0.13.0",
                     }
                 ),
                 "id": "id",
@@ -899,8 +901,17 @@ def test_deploy_flow_register_task_definition_uses_user_env_vars(
     assert container_defs[0]["environment"][-2] in user_vars
 
 
+@pytest.mark.parametrize(
+    "core_version,command",
+    [
+        ("0.10.0", "prefect execute cloud-flow"),
+        ("0.6.0+134", "prefect execute cloud-flow"),
+        ("0.13.0", "prefect execute flow-run"),
+        ("0.13.1+134", "prefect execute flow-run"),
+    ],
+)
 def test_deploy_flow_register_task_definition_all_args(
-    monkeypatch, runner_token, cloud_api
+    core_version, command, monkeypatch, cloud_api
 ):
     boto3_client = MagicMock()
 
@@ -989,6 +1000,7 @@ def test_deploy_flow_register_task_definition_all_args(
                         ).serialize(),
                         "environment": LocalEnvironment().serialize(),
                         "id": "id",
+                        "core_version": core_version,
                     }
                 ),
                 "id": "id",
@@ -1008,13 +1020,13 @@ def test_deploy_flow_register_task_definition_all_args(
         {
             "name": "flow",
             "image": "test/name:tag",
-            "command": ["/bin/sh", "-c", "prefect execute cloud-flow"],
+            "command": ["/bin/sh", "-c", command],
             "environment": [
                 {"name": "PREFECT__CLOUD__API", "value": "https://api.prefect.io"},
                 {"name": "PREFECT__CLOUD__AGENT__LABELS", "value": "[]"},
                 {"name": "PREFECT__CLOUD__USE_LOCAL_SECRETS", "value": "false"},
                 {"name": "PREFECT__LOGGING__LOG_TO_CLOUD", "value": "true"},
-                {"name": "PREFECT__LOGGING__LEVEL", "value": "DEBUG"},
+                {"name": "PREFECT__LOGGING__LEVEL", "value": "INFO"},
                 {
                     "name": "PREFECT__ENGINE__FLOW_RUNNER__DEFAULT_CLASS",
                     "value": "prefect.engine.cloud.CloudFlowRunner",
@@ -1065,7 +1077,7 @@ def test_deploy_flow_register_task_definition_all_args(
 
 @pytest.mark.parametrize("flag", [True, False])
 def test_deploy_flows_includes_agent_labels_in_environment(
-    monkeypatch, runner_token, flag, cloud_api
+    monkeypatch, cloud_api, flag
 ):
     boto3_client = MagicMock()
 
@@ -1123,6 +1135,7 @@ def test_deploy_flows_includes_agent_labels_in_environment(
                         ).serialize(),
                         "environment": LocalEnvironment().serialize(),
                         "id": "id",
+                        "core_version": "0.13.0",
                     }
                 ),
                 "id": "id",
@@ -1142,7 +1155,7 @@ def test_deploy_flows_includes_agent_labels_in_environment(
         {
             "name": "flow",
             "image": "test/name:tag",
-            "command": ["/bin/sh", "-c", "prefect execute cloud-flow"],
+            "command": ["/bin/sh", "-c", "prefect execute flow-run"],
             "environment": [
                 {"name": "PREFECT__CLOUD__API", "value": "https://api.prefect.io"},
                 {
@@ -1154,7 +1167,7 @@ def test_deploy_flows_includes_agent_labels_in_environment(
                     "name": "PREFECT__LOGGING__LOG_TO_CLOUD",
                     "value": str(not flag).lower(),
                 },
-                {"name": "PREFECT__LOGGING__LEVEL", "value": "DEBUG"},
+                {"name": "PREFECT__LOGGING__LEVEL", "value": "INFO"},
                 {
                     "name": "PREFECT__ENGINE__FLOW_RUNNER__DEFAULT_CLASS",
                     "value": "prefect.engine.cloud.CloudFlowRunner",
@@ -1175,7 +1188,7 @@ def test_deploy_flows_includes_agent_labels_in_environment(
     assert boto3_client.register_task_definition.call_args[1]["memory"] == "2"
 
 
-def test_deploy_flows_require_docker_storage(monkeypatch, runner_token):
+def test_deploy_flows_require_docker_storage(monkeypatch, cloud_api):
     boto3_client = MagicMock()
 
     boto3_client.describe_task_definition.return_value = {"tags": []}
@@ -1194,6 +1207,7 @@ def test_deploy_flows_require_docker_storage(monkeypatch, runner_token):
                             "id": "id",
                             "version": 2,
                             "name": "name",
+                            "core_version": "0.13.0",
                         }
                     ),
                     "id": "id",
@@ -1208,9 +1222,7 @@ def test_deploy_flows_require_docker_storage(monkeypatch, runner_token):
 # test to support task revisions and external kwargs
 
 
-def test_deploy_flows_enable_task_revisions_no_tags(
-    monkeypatch, runner_token, cloud_api
-):
+def test_deploy_flows_enable_task_revisions_no_tags(monkeypatch, cloud_api):
     boto3_client = MagicMock()
 
     boto3_client.describe_task_definition.return_value = {"tags": []}
@@ -1232,6 +1244,7 @@ def test_deploy_flows_enable_task_revisions_no_tags(
                         "id": "id",
                         "version": 2,
                         "name": "name",
+                        "core_version": "0.13.0",
                     }
                 ),
                 "id": "id",
@@ -1246,13 +1259,13 @@ def test_deploy_flows_enable_task_revisions_no_tags(
             {
                 "name": "flow",
                 "image": "test/name:tag",
-                "command": ["/bin/sh", "-c", "prefect execute cloud-flow"],
+                "command": ["/bin/sh", "-c", "prefect execute flow-run"],
                 "environment": [
                     {"name": "PREFECT__CLOUD__API", "value": "https://api.prefect.io"},
                     {"name": "PREFECT__CLOUD__AGENT__LABELS", "value": "[]"},
                     {"name": "PREFECT__CLOUD__USE_LOCAL_SECRETS", "value": "false"},
                     {"name": "PREFECT__LOGGING__LOG_TO_CLOUD", "value": "true"},
-                    {"name": "PREFECT__LOGGING__LEVEL", "value": "DEBUG"},
+                    {"name": "PREFECT__LOGGING__LEVEL", "value": "INFO"},
                     {
                         "name": "PREFECT__ENGINE__FLOW_RUNNER__DEFAULT_CLASS",
                         "value": "prefect.engine.cloud.CloudFlowRunner",
@@ -1277,7 +1290,7 @@ def test_deploy_flows_enable_task_revisions_no_tags(
     assert boto3_client.run_task.called_with(taskDefinition="name")
 
 
-def test_deploy_flows_enable_task_revisions_tags_current(monkeypatch, runner_token):
+def test_deploy_flows_enable_task_revisions_tags_current(monkeypatch, cloud_api):
     boto3_client = MagicMock()
 
     boto3_client.describe_task_definition.return_value = {
@@ -1304,6 +1317,7 @@ def test_deploy_flows_enable_task_revisions_tags_current(monkeypatch, runner_tok
                         "id": "id",
                         "version": 5,
                         "name": "name #1",
+                        "core_version": "0.13.0",
                     }
                 ),
                 "id": "id",
@@ -1316,9 +1330,7 @@ def test_deploy_flows_enable_task_revisions_tags_current(monkeypatch, runner_tok
     assert boto3_client.run_task.called_with(taskDefinition="name-1")
 
 
-def test_deploy_flows_enable_task_revisions_old_version_exists(
-    monkeypatch, runner_token
-):
+def test_deploy_flows_enable_task_revisions_old_version_exists(monkeypatch, cloud_api):
     boto3_client = MagicMock()
 
     boto3_client.describe_task_definition.return_value = {
@@ -1349,6 +1361,7 @@ def test_deploy_flows_enable_task_revisions_old_version_exists(
                         "id": "id",
                         "version": 3,
                         "name": "name",
+                        "core_version": "0.13.0",
                     }
                 ),
                 "id": "id",
@@ -1364,7 +1377,7 @@ def test_deploy_flows_enable_task_revisions_old_version_exists(
     )
 
 
-def test_override_kwargs(monkeypatch, runner_token):
+def test_override_kwargs(monkeypatch, cloud_api):
 
     boto3_resource = MagicMock()
     streaming_body = MagicMock()
@@ -1422,6 +1435,7 @@ def test_override_kwargs(monkeypatch, runner_token):
                         "id": "id",
                         "version": 2,
                         "name": "name",
+                        "core_version": "0.13.0",
                     }
                 ),
                 "id": "id",
@@ -1455,7 +1469,7 @@ def test_override_kwargs(monkeypatch, runner_token):
     }
 
 
-def test_override_kwargs_exception(monkeypatch, runner_token):
+def test_override_kwargs_exception(monkeypatch, cloud_api):
 
     boto3_resource = MagicMock()
     streaming_body = MagicMock()
@@ -1490,6 +1504,7 @@ def test_override_kwargs_exception(monkeypatch, runner_token):
                         "id": "id",
                         "version": 2,
                         "name": "name",
+                        "core_version": "0.13.0",
                     }
                 ),
                 "id": "id",
@@ -1508,7 +1523,7 @@ def test_override_kwargs_exception(monkeypatch, runner_token):
     assert container_definitions_kwargs == {}
 
 
-def test_deploy_flows_enable_task_revisions_tags_passed_in(monkeypatch, runner_token):
+def test_deploy_flows_enable_task_revisions_tags_passed_in(monkeypatch, cloud_api):
     boto3_client = MagicMock()
 
     boto3_client.describe_task_definition.return_value = {
@@ -1538,6 +1553,7 @@ def test_deploy_flows_enable_task_revisions_tags_passed_in(monkeypatch, runner_t
                         "id": "id",
                         "version": 2,
                         "name": "name",
+                        "core_version": "0.13.0",
                     }
                 ),
                 "id": "id",
@@ -1558,7 +1574,7 @@ def test_deploy_flows_enable_task_revisions_tags_passed_in(monkeypatch, runner_t
 
 
 def test_deploy_flows_enable_task_revisions_with_external_kwargs(
-    monkeypatch, runner_token, cloud_api
+    monkeypatch, cloud_api
 ):
     boto3_client = MagicMock()
     boto3_resource = MagicMock()
@@ -1607,6 +1623,7 @@ def test_deploy_flows_enable_task_revisions_with_external_kwargs(
                         "id": "new_id",
                         "version": 6,
                         "name": "name",
+                        "core_version": "0.13.0",
                     }
                 ),
                 "id": "id",
@@ -1620,7 +1637,7 @@ def test_deploy_flows_enable_task_revisions_with_external_kwargs(
             {
                 "name": "flow",
                 "image": "test/name:tag",
-                "command": ["/bin/sh", "-c", "prefect execute cloud-flow"],
+                "command": ["/bin/sh", "-c", "prefect execute flow-run"],
                 "environment": [
                     {"name": "PREFECT__CLOUD__API", "value": "https://api.prefect.io"},
                     {
@@ -1629,7 +1646,7 @@ def test_deploy_flows_enable_task_revisions_with_external_kwargs(
                     },
                     {"name": "PREFECT__CLOUD__USE_LOCAL_SECRETS", "value": "false"},
                     {"name": "PREFECT__LOGGING__LOG_TO_CLOUD", "value": "false"},
-                    {"name": "PREFECT__LOGGING__LEVEL", "value": "DEBUG"},
+                    {"name": "PREFECT__LOGGING__LEVEL", "value": "INFO"},
                     {
                         "name": "PREFECT__ENGINE__FLOW_RUNNER__DEFAULT_CLASS",
                         "value": "prefect.engine.cloud.CloudFlowRunner",
@@ -1675,7 +1692,7 @@ def test_deploy_flows_enable_task_revisions_with_external_kwargs(
 
 
 def test_deploy_flows_disable_task_revisions_with_external_kwargs(
-    monkeypatch, runner_token
+    monkeypatch, cloud_api
 ):
     boto3_client = MagicMock()
     boto3_resource = MagicMock()
@@ -1717,6 +1734,7 @@ def test_deploy_flows_disable_task_revisions_with_external_kwargs(
                         "id": "new_id",
                         "version": 6,
                         "name": "name",
+                        "core_version": "0.13.0",
                     }
                 ),
                 "id": "id",
@@ -1749,7 +1767,7 @@ def test_deploy_flows_disable_task_revisions_with_external_kwargs(
     assert boto3_client.run_task.called_with(taskDefinition="prefect-task-new_id")
 
 
-def test_deploy_flows_launch_type_ec2(monkeypatch, runner_token):
+def test_deploy_flows_launch_type_ec2(monkeypatch, cloud_api):
     boto3_client = MagicMock()
     boto3_resource = MagicMock()
     streaming_body = MagicMock()
@@ -1791,6 +1809,7 @@ def test_deploy_flows_launch_type_ec2(monkeypatch, runner_token):
                         "id": "new_id",
                         "version": 6,
                         "name": "name",
+                        "core_version": "0.13.0",
                     }
                 ),
                 "id": "id",
@@ -1823,7 +1842,7 @@ def test_deploy_flows_launch_type_ec2(monkeypatch, runner_token):
     assert boto3_client.run_task.called_with(taskDefinition="prefect-task-new_id")
 
 
-def test_deploy_flows_launch_type_none(monkeypatch, runner_token):
+def test_deploy_flows_launch_type_none(monkeypatch, cloud_api):
     boto3_client = MagicMock()
     boto3_resource = MagicMock()
     streaming_body = MagicMock()
@@ -1865,6 +1884,7 @@ def test_deploy_flows_launch_type_none(monkeypatch, runner_token):
                         "id": "new_id",
                         "version": 6,
                         "name": "name",
+                        "core_version": "0.13.0",
                     }
                 ),
                 "id": "id",
@@ -1896,7 +1916,7 @@ def test_deploy_flows_launch_type_none(monkeypatch, runner_token):
     assert boto3_client.run_task.called_with(taskDefinition="prefect-task-new_id")
 
 
-def test_fargate_agent_start_max_polls(monkeypatch, runner_token):
+def test_fargate_agent_start_max_polls(monkeypatch, runner_token, cloud_api):
     boto3_client = MagicMock()
     monkeypatch.setattr("boto3.client", boto3_client)
 
@@ -1921,7 +1941,7 @@ def test_fargate_agent_start_max_polls(monkeypatch, runner_token):
     assert heartbeat.called
 
 
-def test_fargate_agent_start_max_polls_count(monkeypatch, runner_token):
+def test_fargate_agent_start_max_polls_count(monkeypatch, runner_token, cloud_api):
     boto3_client = MagicMock()
     monkeypatch.setattr("boto3.client", boto3_client)
 
@@ -1947,7 +1967,7 @@ def test_fargate_agent_start_max_polls_count(monkeypatch, runner_token):
     assert heartbeat.call_count == 2
 
 
-def test_fargate_agent_start_max_polls_zero(monkeypatch, runner_token):
+def test_fargate_agent_start_max_polls_zero(monkeypatch, runner_token, cloud_api):
     boto3_client = MagicMock()
     monkeypatch.setattr("boto3.client", boto3_client)
 
@@ -1973,7 +1993,7 @@ def test_fargate_agent_start_max_polls_zero(monkeypatch, runner_token):
     assert heartbeat.call_count == 0
 
 
-def test_agent_configuration_utility(monkeypatch, runner_token):
+def test_agent_configuration_utility(monkeypatch, cloud_api):
     boto3_client = MagicMock()
 
     boto3_client.run_task.return_value = {"tasks": [{"taskArn": "test"}]}

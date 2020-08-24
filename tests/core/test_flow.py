@@ -44,7 +44,8 @@ from prefect.schedules.clocks import ClockEvent
 from prefect.tasks.core.function import FunctionTask
 from prefect.utilities.configuration import set_temporary_config
 from prefect.utilities.serialization import from_qualified_name
-from prefect.utilities.tasks import task, unmapped
+from prefect.utilities.tasks import task
+from prefect.utilities.edges import unmapped
 
 
 class AddTask(Task):
@@ -2417,20 +2418,6 @@ class TestFlowRunMethod:
         )
         f.run()
         assert REPORTED_START_TIMES == start_times
-
-    def test_flow_dot_run_handles_keyboard_signals_gracefully(self):
-        class BadExecutor(LocalExecutor):
-            def submit(self, *args, **kwargs):
-                raise KeyboardInterrupt
-
-        @task
-        def do_something():
-            pass
-
-        f = Flow("test", tasks=[do_something])
-        state = f.run(executor=BadExecutor())
-        assert isinstance(state, Cancelled)
-        assert "interrupt" in state.message.lower()
 
 
 class TestFlowDiagnostics:

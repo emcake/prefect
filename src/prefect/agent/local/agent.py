@@ -6,8 +6,9 @@ from typing import Iterable, List
 
 from prefect import config
 from prefect.agent import Agent
-from prefect.environments.storage import GCS, S3, Azure, Local, GitHub
+from prefect.environments.storage import GCS, S3, Azure, Local, GitHub, Webhook
 from prefect.serialization.storage import StorageSchema
+from prefect.utilities.agent import get_flow_run_command
 from prefect.utilities.graphql import GraphQLResult
 
 
@@ -85,14 +86,17 @@ class LocalAgent(Agent):
         if hostname_label and (hostname not in self.labels):
             assert isinstance(self.labels, list)
             self.labels.append(hostname)
-        self.labels.extend(
-            [
-                "azure-flow-storage",
-                "gcs-flow-storage",
-                "s3-flow-storage",
-                "github-flow-storage",
-            ]
-        )
+
+        all_storage_labels = [
+            "azure-flow-storage",
+            "gcs-flow-storage",
+            "s3-flow-storage",
+            "github-flow-storage",
+            "webhook-flow-storage",
+        ]
+        for label in all_storage_labels:
+            if label not in self.labels:
+                self.labels.append(label)
 
         self.logger.debug(f"Import paths: {self.import_paths}")
         self.logger.debug(f"Show flow logs: {self.show_flow_logs}")
@@ -125,7 +129,8 @@ class LocalAgent(Agent):
         )
 
         if not isinstance(
-            StorageSchema().load(flow_run.flow.storage), (Local, Azure, GCS, S3, GitHub)
+            StorageSchema().load(flow_run.flow.storage),
+            (Local, Azure, GCS, S3, GitHub, Webhook),
         ):
             self.logger.error(
                 "Storage for flow run {} is not a supported type.".format(flow_run.id)
@@ -155,7 +160,7 @@ class LocalAgent(Agent):
         # show flow logs, these log entries will continue to stream to the users terminal
         # until these child processes exit, even if the agent has already exited.
         p = Popen(
-            ["prefect", "execute", "cloud-flow"],
+            get_flow_run_command(flow_run).split(" "),
             stdout=stdout,
             stderr=STDOUT,
             env=current_env,
@@ -186,7 +191,7 @@ class LocalAgent(Agent):
             "PREFECT__CONTEXT__FLOW_ID": flow_run.flow.id,  # type: ignore
             "PREFECT__CLOUD__USE_LOCAL_SECRETS": "false",
             "PREFECT__LOGGING__LOG_TO_CLOUD": str(self.log_to_cloud).lower(),
-            "PREFECT__LOGGING__LEVEL": "DEBUG",
+            "PREFECT__LOGGING__LEVEL": config.logging.level,
             "PREFECT__ENGINE__FLOW_RUNNER__DEFAULT_CLASS": "prefect.engine.cloud.CloudFlowRunner",
             "PREFECT__ENGINE__TASK_RUNNER__DEFAULT_CLASS": "prefect.engine.cloud.CloudTaskRunner",
             **self.env_vars,

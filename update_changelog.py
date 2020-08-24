@@ -10,7 +10,6 @@ SKIPLINES = 1
 SECTIONS = [
     ("feature", "Features"),
     ("enhancement", "Enhancements"),
-    ("server", "Server"),
     ("task", "Task Library"),
     ("fix", "Fixes"),
     ("deprecation", "Deprecations"),
@@ -34,6 +33,7 @@ CHANGES_DIR = os.path.join(REPO_DIR, "changes")
 
 def get_change_files():
     change_files = sorted(glob.glob(os.path.join(CHANGES_DIR, "*.yaml")))
+    change_files.extend(sorted(glob.glob(os.path.join(CHANGES_DIR, "*.yml"))))
     change_files = [p for p in change_files if not p.endswith("EXAMPLE.yaml")]
     return change_files
 

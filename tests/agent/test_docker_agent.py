@@ -10,7 +10,7 @@ from prefect.utilities.configuration import set_temporary_config
 from prefect.utilities.graphql import GraphQLResult
 
 
-def test_docker_agent_init(monkeypatch, runner_token):
+def test_docker_agent_init(monkeypatch, cloud_api):
     api = MagicMock()
     monkeypatch.setattr(
         "prefect.agent.docker.agent.DockerAgent._get_docker_client",
@@ -23,7 +23,7 @@ def test_docker_agent_init(monkeypatch, runner_token):
     assert agent.name == "agent"
 
 
-def test_docker_agent_config_options(monkeypatch, runner_token):
+def test_docker_agent_config_options(monkeypatch, cloud_api):
     import docker  # DockerAgent imports docker within the constructor
 
     api = MagicMock()
@@ -41,7 +41,7 @@ def test_docker_agent_config_options(monkeypatch, runner_token):
         assert api.call_args[1]["base_url"] == "unix://var/run/docker.sock"
 
 
-def test_docker_agent_daemon_url_responds_to_system(monkeypatch, runner_token):
+def test_docker_agent_daemon_url_responds_to_system(monkeypatch, cloud_api):
     import docker  # DockerAgent imports docker within the constructor
 
     api = MagicMock()
@@ -58,7 +58,7 @@ def test_docker_agent_daemon_url_responds_to_system(monkeypatch, runner_token):
         assert api.call_args[1]["base_url"] == "npipe:////./pipe/docker_engine"
 
 
-def test_docker_agent_config_options_populated(monkeypatch, runner_token):
+def test_docker_agent_config_options_populated(monkeypatch, cloud_api):
     import docker  # DockerAgent imports docker within the constructor
 
     api = MagicMock()
@@ -74,7 +74,7 @@ def test_docker_agent_config_options_populated(monkeypatch, runner_token):
         assert api.call_args[1]["base_url"] == "url"
 
 
-def test_docker_agent_no_pull(monkeypatch, runner_token):
+def test_docker_agent_no_pull(monkeypatch, cloud_api):
     api = MagicMock()
     monkeypatch.setattr(
         "prefect.agent.docker.agent.DockerAgent._get_docker_client",
@@ -100,7 +100,7 @@ def test_docker_agent_no_pull(monkeypatch, runner_token):
         assert not agent.no_pull
 
 
-def test_docker_agent_ping(monkeypatch, runner_token):
+def test_docker_agent_ping(monkeypatch, cloud_api):
     api = MagicMock()
     api.ping.return_value = True
     monkeypatch.setattr(
@@ -112,7 +112,7 @@ def test_docker_agent_ping(monkeypatch, runner_token):
     assert api.ping.called
 
 
-def test_docker_agent_ping_exception(monkeypatch, runner_token):
+def test_docker_agent_ping_exception(monkeypatch, cloud_api):
     api = MagicMock()
     api.ping.return_value = True
     api.ping.side_effect = Exception()
@@ -125,7 +125,7 @@ def test_docker_agent_ping_exception(monkeypatch, runner_token):
         agent = DockerAgent()
 
 
-def test_populate_env_vars_uses_user_provided_env_vars(monkeypatch, runner_token):
+def test_populate_env_vars_uses_user_provided_env_vars(monkeypatch, cloud_api):
     api = MagicMock()
     monkeypatch.setattr(
         "prefect.agent.docker.agent.DockerAgent._get_docker_client",
@@ -148,7 +148,7 @@ def test_populate_env_vars_uses_user_provided_env_vars(monkeypatch, runner_token
     assert env_vars["AUTH_THING"] == "foo"
 
 
-def test_populate_env_vars(monkeypatch, runner_token):
+def test_populate_env_vars(monkeypatch, cloud_api):
     api = MagicMock()
     monkeypatch.setattr(
         "prefect.agent.docker.agent.DockerAgent._get_docker_client",
@@ -176,7 +176,7 @@ def test_populate_env_vars(monkeypatch, runner_token):
             "PREFECT__CONTEXT__FLOW_ID": "foo",
             "PREFECT__CLOUD__USE_LOCAL_SECRETS": "false",
             "PREFECT__LOGGING__LOG_TO_CLOUD": "true",
-            "PREFECT__LOGGING__LEVEL": "DEBUG",
+            "PREFECT__LOGGING__LEVEL": "INFO",
             "PREFECT__ENGINE__FLOW_RUNNER__DEFAULT_CLASS": "prefect.engine.cloud.CloudFlowRunner",
             "PREFECT__ENGINE__TASK_RUNNER__DEFAULT_CLASS": "prefect.engine.cloud.CloudTaskRunner",
         }
@@ -184,7 +184,7 @@ def test_populate_env_vars(monkeypatch, runner_token):
         assert env_vars == expected_vars
 
 
-def test_populate_env_vars_includes_agent_labels(monkeypatch, runner_token):
+def test_populate_env_vars_includes_agent_labels(monkeypatch, cloud_api):
     api = MagicMock()
     monkeypatch.setattr(
         "prefect.agent.docker.agent.DockerAgent._get_docker_client",
@@ -212,7 +212,7 @@ def test_populate_env_vars_includes_agent_labels(monkeypatch, runner_token):
             "PREFECT__CONTEXT__FLOW_ID": "foo",
             "PREFECT__CLOUD__USE_LOCAL_SECRETS": "false",
             "PREFECT__LOGGING__LOG_TO_CLOUD": "true",
-            "PREFECT__LOGGING__LEVEL": "DEBUG",
+            "PREFECT__LOGGING__LEVEL": "INFO",
             "PREFECT__ENGINE__FLOW_RUNNER__DEFAULT_CLASS": "prefect.engine.cloud.CloudFlowRunner",
             "PREFECT__ENGINE__TASK_RUNNER__DEFAULT_CLASS": "prefect.engine.cloud.CloudTaskRunner",
         }
@@ -222,7 +222,7 @@ def test_populate_env_vars_includes_agent_labels(monkeypatch, runner_token):
 
 @pytest.mark.parametrize("flag", [True, False])
 def test_populate_env_vars_is_responsive_to_logging_config(
-    monkeypatch, runner_token, flag
+    monkeypatch, cloud_api, flag
 ):
     api = MagicMock()
     monkeypatch.setattr(
@@ -241,7 +241,16 @@ def test_populate_env_vars_is_responsive_to_logging_config(
     assert env_vars["PREFECT__LOGGING__LOG_TO_CLOUD"] == str(not flag).lower()
 
 
-def test_docker_agent_deploy_flow(monkeypatch, runner_token):
+@pytest.mark.parametrize(
+    "core_version,command",
+    [
+        ("0.10.0", "prefect execute cloud-flow"),
+        ("0.6.0+134", "prefect execute cloud-flow"),
+        ("0.13.0", "prefect execute flow-run"),
+        ("0.13.1+134", "prefect execute flow-run"),
+    ],
+)
+def test_docker_agent_deploy_flow(core_version, command, monkeypatch, cloud_api):
     api = MagicMock()
     api.ping.return_value = True
     api.create_container.return_value = {"Id": "container_id"}
@@ -262,6 +271,7 @@ def test_docker_agent_deploy_flow(monkeypatch, runner_token):
                             registry_url="test", image_name="name", image_tag="tag"
                         ).serialize(),
                         "environment": LocalEnvironment().serialize(),
+                        "core_version": core_version,
                     }
                 ),
                 "id": "id",
@@ -275,12 +285,12 @@ def test_docker_agent_deploy_flow(monkeypatch, runner_token):
     assert api.start.called
 
     assert api.create_host_config.call_args[1]["auto_remove"] is True
-    assert api.create_container.call_args[1]["command"] == "prefect execute cloud-flow"
+    assert api.create_container.call_args[1]["command"] == command
     assert api.create_container.call_args[1]["host_config"]["AutoRemove"] is True
     assert api.start.call_args[1]["container"] == "container_id"
 
 
-def test_docker_agent_deploy_flow_uses_environment_metadata(monkeypatch, runner_token):
+def test_docker_agent_deploy_flow_uses_environment_metadata(monkeypatch, cloud_api):
     api = MagicMock()
     api.ping.return_value = True
     api.create_container.return_value = {"Id": "container_id"}
@@ -301,6 +311,7 @@ def test_docker_agent_deploy_flow_uses_environment_metadata(monkeypatch, runner_
                         "environment": LocalEnvironment(
                             metadata={"image": "repo/name:tag"}
                         ).serialize(),
+                        "core_version": "0.13.0",
                     }
                 ),
                 "id": "id",
@@ -314,12 +325,12 @@ def test_docker_agent_deploy_flow_uses_environment_metadata(monkeypatch, runner_
     assert api.start.called
 
     assert api.create_host_config.call_args[1]["auto_remove"] is True
-    assert api.create_container.call_args[1]["command"] == "prefect execute cloud-flow"
+    assert api.create_container.call_args[1]["command"] == "prefect execute flow-run"
     assert api.create_container.call_args[1]["host_config"]["AutoRemove"] is True
     assert api.start.call_args[1]["container"] == "container_id"
 
 
-def test_docker_agent_deploy_flow_storage_raises(monkeypatch, runner_token):
+def test_docker_agent_deploy_flow_storage_raises(monkeypatch, cloud_api):
 
     monkeypatch.setattr("prefect.agent.agent.Client", MagicMock())
     api = MagicMock()
@@ -341,6 +352,7 @@ def test_docker_agent_deploy_flow_storage_raises(monkeypatch, runner_token):
                             "storage": Local().serialize(),
                             "id": "foo",
                             "environment": LocalEnvironment().serialize(),
+                            "core_version": "0.13.0",
                         }
                     ),
                     "id": "id",
@@ -353,7 +365,7 @@ def test_docker_agent_deploy_flow_storage_raises(monkeypatch, runner_token):
     assert not api.pull.called
 
 
-def test_docker_agent_deploy_flow_no_pull(monkeypatch, runner_token):
+def test_docker_agent_deploy_flow_no_pull(monkeypatch, cloud_api):
 
     api = MagicMock()
     api.ping.return_value = True
@@ -374,6 +386,7 @@ def test_docker_agent_deploy_flow_no_pull(monkeypatch, runner_token):
                             registry_url="test", image_name="name", image_tag="tag"
                         ).serialize(),
                         "environment": LocalEnvironment().serialize(),
+                        "core_version": "0.13.0",
                     }
                 ),
                 "id": "id",
@@ -388,7 +401,7 @@ def test_docker_agent_deploy_flow_no_pull(monkeypatch, runner_token):
 
 
 def test_docker_agent_deploy_flow_no_pull_using_environment_metadata(
-    monkeypatch, runner_token
+    monkeypatch, cloud_api
 ):
 
     api = MagicMock()
@@ -410,6 +423,7 @@ def test_docker_agent_deploy_flow_no_pull_using_environment_metadata(
                         "environment": LocalEnvironment(
                             metadata={"image": "name:tag"}
                         ).serialize(),
+                        "core_version": "0.13.0",
                     }
                 ),
                 "id": "id",
@@ -423,7 +437,84 @@ def test_docker_agent_deploy_flow_no_pull_using_environment_metadata(
     assert api.start.called
 
 
-def test_docker_agent_deploy_flow_show_flow_logs(monkeypatch, runner_token):
+def test_docker_agent_deploy_flow_reg_allow_list_allowed(monkeypatch, cloud_api):
+    api = MagicMock()
+    api.ping.return_value = True
+    api.create_container.return_value = {"Id": "container_id"}
+    monkeypatch.setattr(
+        "prefect.agent.docker.agent.DockerAgent._get_docker_client",
+        MagicMock(return_value=api),
+    )
+
+    agent = DockerAgent(reg_allow_list=["test1"])
+
+    agent.deploy_flow(
+        flow_run=GraphQLResult(
+            {
+                "flow": GraphQLResult(
+                    {
+                        "id": "foo",
+                        "storage": Docker(
+                            registry_url="test1", image_name="name", image_tag="tag"
+                        ).serialize(),
+                        "environment": LocalEnvironment().serialize(),
+                        "core_version": "0.13.0",
+                    }
+                ),
+                "id": "id",
+                "name": "name",
+            }
+        )
+    )
+
+    assert api.pull.called
+    assert api.create_container.called
+    assert api.start.called
+
+
+def test_docker_agent_deploy_flow_reg_allow_list_not_allowed(monkeypatch, cloud_api):
+    api = MagicMock()
+    api.ping.return_value = True
+    api.create_container.return_value = {"Id": "container_id"}
+    monkeypatch.setattr(
+        "prefect.agent.docker.agent.DockerAgent._get_docker_client",
+        MagicMock(return_value=api),
+    )
+
+    agent = DockerAgent(reg_allow_list=["test1"])
+
+    with pytest.raises(ValueError) as error:
+        agent.deploy_flow(
+            flow_run=GraphQLResult(
+                {
+                    "flow": GraphQLResult(
+                        {
+                            "id": "foo",
+                            "storage": Docker(
+                                registry_url="test2", image_name="name", image_tag="tag"
+                            ).serialize(),
+                            "environment": LocalEnvironment().serialize(),
+                            "core_version": "0.13.0",
+                        }
+                    ),
+                    "id": "id",
+                    "name": "name",
+                }
+            )
+        )
+
+    expected_error = (
+        "Trying to pull image from a Docker registry 'test2'"
+        " which is not in the reg_allow_list"
+    )
+
+    assert not api.pull.called
+    assert not api.create_container.called
+    assert not api.start.called
+    assert str(error.value) == expected_error
+
+
+def test_docker_agent_deploy_flow_show_flow_logs(monkeypatch, cloud_api):
 
     process = MagicMock()
     monkeypatch.setattr("multiprocessing.Process", process)
@@ -447,6 +538,7 @@ def test_docker_agent_deploy_flow_show_flow_logs(monkeypatch, runner_token):
                             registry_url="test", image_name="name", image_tag="tag"
                         ).serialize(),
                         "environment": LocalEnvironment().serialize(),
+                        "core_version": "0.13.0",
                     }
                 ),
                 "id": "id",
@@ -463,7 +555,7 @@ def test_docker_agent_deploy_flow_show_flow_logs(monkeypatch, runner_token):
     assert api.start.called
 
 
-def test_docker_agent_shutdown_terminates_child_processes(monkeypatch, runner_token):
+def test_docker_agent_shutdown_terminates_child_processes(monkeypatch, cloud_api):
     monkeypatch.setattr("prefect.agent.agent.Client", MagicMock())
     api = MagicMock()
     api.ping.return_value = True
@@ -482,7 +574,7 @@ def test_docker_agent_shutdown_terminates_child_processes(monkeypatch, runner_to
     assert proc.terminate.called
 
 
-def test_docker_agent_deploy_flow_no_registry_does_not_pull(monkeypatch, runner_token):
+def test_docker_agent_deploy_flow_no_registry_does_not_pull(monkeypatch, cloud_api):
 
     api = MagicMock()
     api.ping.return_value = True
@@ -503,6 +595,7 @@ def test_docker_agent_deploy_flow_no_registry_does_not_pull(monkeypatch, runner_
                             registry_url="", image_name="name", image_tag="tag"
                         ).serialize(),
                         "environment": LocalEnvironment().serialize(),
+                        "core_version": "0.13.0",
                     }
                 ),
                 "id": "id",
@@ -516,7 +609,7 @@ def test_docker_agent_deploy_flow_no_registry_does_not_pull(monkeypatch, runner_
     assert api.start.called
 
 
-def test_docker_agent_heartbeat_gocase(monkeypatch, runner_token):
+def test_docker_agent_heartbeat_gocase(monkeypatch, cloud_api):
     api = MagicMock()
     api.ping.return_value = True
     monkeypatch.setattr(
@@ -529,7 +622,7 @@ def test_docker_agent_heartbeat_gocase(monkeypatch, runner_token):
     assert api.ping.call_count == 2
 
 
-def test_docker_agent_heartbeat_exits_on_failure(monkeypatch, runner_token, caplog):
+def test_docker_agent_heartbeat_exits_on_failure(monkeypatch, cloud_api, caplog):
     api = MagicMock()
     api.ping.return_value = True
     monkeypatch.setattr(
@@ -550,7 +643,7 @@ def test_docker_agent_heartbeat_exits_on_failure(monkeypatch, runner_token, capl
     assert api.ping.call_count == 7
 
 
-def test_docker_agent_heartbeat_logs_reconnect(monkeypatch, runner_token, caplog):
+def test_docker_agent_heartbeat_logs_reconnect(monkeypatch, cloud_api, caplog):
     api = MagicMock()
     api.ping.return_value = True
     monkeypatch.setattr(
@@ -568,7 +661,7 @@ def test_docker_agent_heartbeat_logs_reconnect(monkeypatch, runner_token, caplog
     assert "Reconnected to Docker daemon" in caplog.text
 
 
-def test_docker_agent_heartbeat_resets_fail_count(monkeypatch, runner_token, caplog):
+def test_docker_agent_heartbeat_resets_fail_count(monkeypatch, cloud_api, caplog):
     api = MagicMock()
     api.ping.return_value = True
     monkeypatch.setattr(
@@ -587,7 +680,7 @@ def test_docker_agent_heartbeat_resets_fail_count(monkeypatch, runner_token, cap
     assert api.ping.call_count == 4
 
 
-def test_docker_agent_init_volume_empty_options(monkeypatch, runner_token):
+def test_docker_agent_init_volume_empty_options(monkeypatch, cloud_api):
     api = MagicMock()
     monkeypatch.setattr(
         "prefect.agent.docker.agent.DockerAgent._get_docker_client",
@@ -613,7 +706,7 @@ def test_docker_agent_init_volume_empty_options(monkeypatch, runner_token):
         ("\n../some/path", True),  # it is up to the caller to strip the string
     ],
 )
-def test_docker_agent_is_named_volume_unix(monkeypatch, runner_token, path, result):
+def test_docker_agent_is_named_volume_unix(monkeypatch, cloud_api, path, result):
     api = MagicMock()
     monkeypatch.setattr(
         "prefect.agent.docker.agent.DockerAgent._get_docker_client",
@@ -636,7 +729,7 @@ def test_docker_agent_is_named_volume_unix(monkeypatch, runner_token, path, resu
         ("\\\\\\some\\path", False),
     ],
 )
-def test_docker_agent_is_named_volume_win32(monkeypatch, runner_token, path, result):
+def test_docker_agent_is_named_volume_win32(monkeypatch, cloud_api, path, result):
     api = MagicMock()
     monkeypatch.setattr(
         "prefect.agent.docker.agent.DockerAgent._get_docker_client",
@@ -704,12 +797,7 @@ def test_docker_agent_is_named_volume_win32(monkeypatch, runner_token, path, res
     ],
 )
 def test_docker_agent_parse_volume_spec_unix(
-    monkeypatch,
-    runner_token,
-    candidate,
-    named_volumes,
-    container_mount_paths,
-    host_spec,
+    monkeypatch, cloud_api, candidate, named_volumes, container_mount_paths, host_spec,
 ):
     api = MagicMock()
     monkeypatch.setattr(
@@ -778,12 +866,7 @@ def test_docker_agent_parse_volume_spec_unix(
     ],
 )
 def test_docker_agent_parse_volume_spec_win(
-    monkeypatch,
-    runner_token,
-    candidate,
-    named_volumes,
-    container_mount_paths,
-    host_spec,
+    monkeypatch, cloud_api, candidate, named_volumes, container_mount_paths, host_spec,
 ):
     api = MagicMock()
     monkeypatch.setattr(
@@ -814,7 +897,7 @@ def test_docker_agent_parse_volume_spec_win(
     ],
 )
 def test_docker_agent_parse_volume_spec_raises_on_invalid_spec(
-    monkeypatch, runner_token, candidate, exception_type,
+    monkeypatch, cloud_api, candidate, exception_type,
 ):
     api = MagicMock()
     monkeypatch.setattr(
@@ -828,7 +911,7 @@ def test_docker_agent_parse_volume_spec_raises_on_invalid_spec(
         agent._parse_volume_spec([candidate])
 
 
-def test_docker_agent_start_max_polls(monkeypatch, runner_token):
+def test_docker_agent_start_max_polls(monkeypatch, runner_token, cloud_api):
     api = MagicMock()
     monkeypatch.setattr(
         "prefect.agent.docker.agent.DockerAgent._get_docker_client",
@@ -856,7 +939,7 @@ def test_docker_agent_start_max_polls(monkeypatch, runner_token):
     assert heartbeat.called
 
 
-def test_docker_agent_start_max_polls_count(monkeypatch, runner_token):
+def test_docker_agent_start_max_polls_count(monkeypatch, runner_token, cloud_api):
     api = MagicMock()
     monkeypatch.setattr(
         "prefect.agent.docker.agent.DockerAgent._get_docker_client",
@@ -885,7 +968,7 @@ def test_docker_agent_start_max_polls_count(monkeypatch, runner_token):
     assert heartbeat.call_count == 2
 
 
-def test_docker_agent_start_max_polls_zero(monkeypatch, runner_token):
+def test_docker_agent_start_max_polls_zero(monkeypatch, runner_token, cloud_api):
     api = MagicMock()
     monkeypatch.setattr(
         "prefect.agent.docker.agent.DockerAgent._get_docker_client",
@@ -914,7 +997,7 @@ def test_docker_agent_start_max_polls_zero(monkeypatch, runner_token):
     assert heartbeat.call_count == 0
 
 
-def test_docker_agent_network(monkeypatch, runner_token):
+def test_docker_agent_network(monkeypatch, cloud_api):
 
     api = MagicMock()
     api.ping.return_value = True
@@ -936,6 +1019,7 @@ def test_docker_agent_network(monkeypatch, runner_token):
                             registry_url="test", image_name="name", image_tag="tag"
                         ).serialize(),
                         "environment": LocalEnvironment().serialize(),
+                        "core_version": "0.13.0",
                     }
                 ),
                 "id": "id",
@@ -950,7 +1034,7 @@ def test_docker_agent_network(monkeypatch, runner_token):
 
 
 def test_docker_agent_deploy_with_interface_check_linux(
-    monkeypatch, runner_token, linux_platform
+    monkeypatch, cloud_api, linux_platform
 ):
 
     api = MagicMock()
@@ -975,6 +1059,7 @@ def test_docker_agent_deploy_with_interface_check_linux(
                             registry_url="", image_name="name", image_tag="tag"
                         ).serialize(),
                         "environment": LocalEnvironment().serialize(),
+                        "core_version": "0.13.0",
                     }
                 ),
                 "id": "id",
@@ -987,7 +1072,7 @@ def test_docker_agent_deploy_with_interface_check_linux(
 
 
 def test_docker_agent_deploy_with_no_interface_check_linux(
-    monkeypatch, runner_token, linux_platform
+    monkeypatch, cloud_api, linux_platform
 ):
 
     api = MagicMock()
@@ -1012,6 +1097,7 @@ def test_docker_agent_deploy_with_no_interface_check_linux(
                             registry_url="", image_name="name", image_tag="tag"
                         ).serialize(),
                         "environment": LocalEnvironment().serialize(),
+                        "core_version": "0.13.0",
                     }
                 ),
                 "id": "id",

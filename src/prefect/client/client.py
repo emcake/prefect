@@ -9,12 +9,23 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional, Union
 from urllib.parse import urljoin
 
+# if simplejson is installed, `requests` defaults to using it instead of json
+# this allows the client to gracefully handle either json or simplejson
+try:
+    from simplejson.errors import JSONDecodeError
+except ImportError:
+    from json.decoder import JSONDecodeError
+
 import pendulum
 import toml
 from slugify import slugify
 
 import prefect
-from prefect.utilities.exceptions import AuthorizationError, ClientError
+from prefect.utilities.exceptions import (
+    AuthorizationError,
+    ClientError,
+    VersionLockError,
+)
 from prefect.utilities.graphql import (
     EnumValue,
     GraphQLResult,
@@ -92,20 +103,60 @@ class Client:
             "auth_token", None
         )
 
-        # if no api token was passed, attempt to load state from local storage
-        if not self._api_token and prefect.config.backend == "cloud":
-            settings = self._load_local_settings()
-            self._api_token = settings.get("api_token")
+        if prefect.config.backend == "cloud":
+            if not self._api_token:
+                # if no api token was passed, attempt to load state from local storage
+                settings = self._load_local_settings()
+                self._api_token = settings.get("api_token")
 
-            if self._api_token:
-                self._active_tenant_id = settings.get("active_tenant_id")
-            if self._active_tenant_id:
-                try:
-                    self.login_to_tenant(tenant_id=self._active_tenant_id)
-                except AuthorizationError:
-                    # if an authorization error is raised, then the token is invalid and should
-                    # be cleared
-                    self.logout_from_tenant()
+                if self._api_token:
+                    self._active_tenant_id = settings.get("active_tenant_id")
+                if self._active_tenant_id:
+                    try:
+                        self.login_to_tenant(tenant_id=self._active_tenant_id)
+                    except AuthorizationError:
+                        # if an authorization error is raised, then the token is invalid and should
+                        # be cleared
+                        self.logout_from_tenant()
+        else:
+            # TODO: Separate put this functionality and clean up initial tenant access handling
+            if not self._active_tenant_id:
+                tenant_info = self.graphql({"query": {"tenant": {"id"}}})
+                if tenant_info.data.tenant:
+                    self._active_tenant_id = tenant_info.data.tenant[0].id
+
+    def create_tenant(self, name: str, slug: str = None) -> str:
+        """
+        Creates a new tenant.
+
+        Note this route only works when run against Prefect Server.
+
+        Args:
+            - name (str): the name of the tenant to create
+            - slug (str, optional): the slug of the tenant to create; defaults to name
+
+        Returns:
+            - str: the ID of the newly created tenant, or the ID of the currently active tenant
+
+        Raises:
+            - ValueError: if run against Prefect Cloud
+        """
+        if prefect.config.backend != "server":
+            msg = "To create a tenant with Prefect Cloud, please signup at https://cloud.prefect.io/"
+            raise ValueError(msg)
+
+        if slug is None:
+            slug = slugify(name)
+
+        tenant_info = self.graphql(
+            {
+                "mutation($input: create_tenant_input!)": {
+                    "create_tenant(input: $input)": {"id"}
+                }
+            },
+            variables=dict(input=dict(name=name, slug=slug)),
+        )
+        return tenant_info.data.create_tenant.id
 
     # -------------------------------------------------------------------------
     # Utilities
@@ -117,6 +168,7 @@ class Client:
         headers: dict = None,
         params: Dict[str, JSONLike] = None,
         token: str = None,
+        retry_on_api_error: bool = True,
     ) -> dict:
         """
         Convenience function for calling the Prefect API with token auth and GET request
@@ -129,6 +181,8 @@ class Client:
             - headers (dict, optional): Headers to pass with the request
             - params (dict): GET parameters
             - token (str): an auth token. If not supplied, the `client.access_token` is used.
+            - retry_on_api_error (bool): whether the operation should be retried if the API returns
+                an API_ERROR code
 
         Returns:
             - dict: Dictionary representation of the request made
@@ -140,6 +194,7 @@ class Client:
             server=server,
             headers=headers,
             token=token,
+            retry_on_api_error=retry_on_api_error,
         )
         if response.text:
             return response.json()
@@ -153,6 +208,7 @@ class Client:
         headers: dict = None,
         params: Dict[str, JSONLike] = None,
         token: str = None,
+        retry_on_api_error: bool = True,
     ) -> dict:
         """
         Convenience function for calling the Prefect API with token auth and POST request
@@ -165,6 +221,8 @@ class Client:
             - headers(dict): headers to pass with the request
             - params (dict): POST parameters
             - token (str): an auth token. If not supplied, the `client.access_token` is used.
+            - retry_on_api_error (bool): whether the operation should be retried if the API returns
+                an API_ERROR code
 
         Returns:
             - dict: Dictionary representation of the request made
@@ -176,6 +234,7 @@ class Client:
             server=server,
             headers=headers,
             token=token,
+            retry_on_api_error=retry_on_api_error,
         )
         if response.text:
             return response.json()
@@ -189,6 +248,7 @@ class Client:
         headers: Dict[str, str] = None,
         variables: Dict[str, JSONLike] = None,
         token: str = None,
+        retry_on_api_error: bool = True,
     ) -> GraphQLResult:
         """
         Convenience function for running queries against the Prefect GraphQL API
@@ -203,6 +263,8 @@ class Client:
             - variables (dict): Variables to be filled into a query with the key being
                 equivalent to the variables that are accepted by the query
             - token (str): an auth token. If not supplied, the `client.access_token` is used.
+            - retry_on_api_error (bool): whether the operation should be retried if the API returns
+                an API_ERROR code
 
         Returns:
             - dict: Data returned from the GraphQL query
@@ -216,6 +278,7 @@ class Client:
             headers=headers,
             params=dict(query=parse_graphql(query), variables=json.dumps(variables)),
             token=token,
+            retry_on_api_error=retry_on_api_error,
         )
 
         if raise_on_error and "errors" in result:
@@ -223,6 +286,11 @@ class Client:
                 raise AuthorizationError(result["errors"])
             elif "Malformed Authorization header" in str(result["errors"]):
                 raise AuthorizationError(result["errors"])
+            elif (
+                result["errors"][0].get("extensions", {}).get("code")
+                == "VERSION_LOCKING_ERROR"
+            ):
+                raise VersionLockError(result["errors"])
             raise ClientError(result["errors"])
         else:
             return GraphQLResult(result)  # type: ignore
@@ -273,6 +341,7 @@ class Client:
         server: str = None,
         headers: dict = None,
         token: str = None,
+        retry_on_api_error: bool = True,
     ) -> "requests.models.Response":
         """
         Runs any specified request (GET, POST, DELETE) against the server
@@ -285,6 +354,8 @@ class Client:
                 server is used if not specified
             - headers (dict, optional): Headers to pass with the request
             - token (str): an auth token. If not supplied, the `client.access_token` is used.
+            - retry_on_api_error (bool): whether the operation should be retried if the API returns
+                an API_ERROR code
 
         Returns:
             - requests.models.Response: The response returned from the request
@@ -318,8 +389,9 @@ class Client:
             headers.update(self._attached_headers)
 
         session = requests.Session()
+        retry_total = 6 if prefect.config.backend == "cloud" else 1
         retries = requests.packages.urllib3.util.retry.Retry(
-            total=6,
+            total=retry_total,
             backoff_factor=1,
             status_forcelist=[500, 502, 503, 504],
             method_whitelist=["DELETE", "GET", "POST"],
@@ -332,7 +404,7 @@ class Client:
         # parse the response
         try:
             json_resp = response.json()
-        except json.JSONDecodeError:
+        except JSONDecodeError:
             if prefect.config.backend == "cloud" and "Authorization" not in headers:
                 raise ClientError(
                     "Malformed response received from Cloud - please ensure that you "
@@ -342,7 +414,7 @@ class Client:
                 raise ClientError("Malformed response received from API.")
 
         # check if there was an API_ERROR code in the response
-        if "API_ERROR" in str(json_resp.get("errors")):
+        if "API_ERROR" in str(json_resp.get("errors")) and retry_on_api_error:
             success, retry_count = False, 0
             # retry up to six times
             while success is False and retry_count < 6:
@@ -355,7 +427,7 @@ class Client:
                 )
                 if "API_ERROR" in str(response.json().get("errors")):
                     retry_count += 1
-                    time.sleep(0.1 * (2 ** (retry_count - 1)))
+                    time.sleep(0.25 * (2 ** (retry_count - 1)))
                 else:
                     success = True
 
@@ -494,25 +566,27 @@ class Client:
 
         tenant_id = tenant.data.tenant[0].id  # type: ignore
 
-        payload = self.graphql(
-            {
-                "mutation($input: switch_tenant_input!)": {
-                    "switch_tenant(input: $input)": {
-                        "access_token",
-                        "expires_at",
-                        "refresh_token",
+        if prefect.config.backend == "cloud":
+            payload = self.graphql(
+                {
+                    "mutation($input: switch_tenant_input!)": {
+                        "switch_tenant(input: $input)": {
+                            "access_token",
+                            "expires_at",
+                            "refresh_token",
+                        }
                     }
-                }
-            },
-            variables=dict(input=dict(tenant_id=tenant_id)),
-            # Use the API token to switch tenants
-            token=self._api_token,
-        )  # type: ignore
-        self._access_token = payload.data.switch_tenant.access_token  # type: ignore
-        self._access_token_expires_at = pendulum.parse(  # type: ignore
-            payload.data.switch_tenant.expires_at  # type: ignore
-        )  # type: ignore
-        self._refresh_token = payload.data.switch_tenant.refresh_token  # type: ignore
+                },
+                variables=dict(input=dict(tenant_id=tenant_id)),
+                # Use the API token to switch tenants
+                token=self._api_token,
+            )  # type: ignore
+            self._access_token = payload.data.switch_tenant.access_token  # type: ignore
+            self._access_token_expires_at = pendulum.parse(  # type: ignore
+                payload.data.switch_tenant.expires_at  # type: ignore
+            )  # type: ignore
+            self._refresh_token = payload.data.switch_tenant.refresh_token  # type: ignore
+
         self._active_tenant_id = tenant_id
 
         # save the tenant setting
@@ -634,30 +708,27 @@ class Client:
 
         project = None
 
-        if prefect.config.backend == "cloud":
-            if project_name is None:
-                raise TypeError(
-                    "'project_name' is a required field when registering a flow with Cloud. "
-                    "If you are attempting to register a Flow with a local Prefect server "
-                    "you may need to run `prefect backend server` first."
-                )
+        if project_name is None:
+            raise TypeError(
+                "'project_name' is a required field when registering a flow."
+            )
 
-            query_project = {
-                "query": {
-                    with_args("project", {"where": {"name": {"_eq": project_name}}}): {
-                        "id": True
-                    }
+        query_project = {
+            "query": {
+                with_args("project", {"where": {"name": {"_eq": project_name}}}): {
+                    "id": True
                 }
             }
+        }
 
-            project = self.graphql(query_project).data.project  # type: ignore
+        project = self.graphql(query_project).data.project  # type: ignore
 
-            if not project:
-                raise ValueError(
-                    'Project {} not found. Run `client.create_project("{}")` to create it.'.format(
-                        project_name, project_name
-                    )
+        if not project:
+            raise ValueError(
+                'Project {} not found. Run `client.create_project("{}")` to create it.'.format(
+                    project_name, project_name
                 )
+            )
 
         serialized_flow = flow.serialize(build=build)  # type: Any
 
@@ -696,6 +767,7 @@ class Client:
                     version_group_id=version_group_id,
                 )
             ),
+            retry_on_api_error=False,
         )  # type: Any
 
         flow_id = (
@@ -806,7 +878,11 @@ class Client:
         res = self.graphql(
             project_mutation,
             variables=dict(
-                input=dict(name=project_name, description=project_description)
+                input=dict(
+                    name=project_name,
+                    description=project_description,
+                    tenant_id=self._active_tenant_id,
+                )
             ),
         )  # type: Any
 
@@ -982,16 +1058,42 @@ class Client:
         }
         self.graphql(mutation, raise_on_error=True)
 
+    def get_flow_run_state(self, flow_run_id: str) -> "prefect.engine.state.State":
+        """
+        Retrieves the current state for a flow run.
+
+        Args:
+            - flow_run_id (str): the id for this flow run
+
+        Returns:
+            - State: a Prefect State object
+        """
+        query = {
+            "query": {
+                with_args("flow_run_by_pk", {"id": flow_run_id}): {
+                    "serialized_state": True,
+                }
+            }
+        }
+
+        flow_run = self.graphql(query).data.flow_run_by_pk
+
+        return prefect.engine.state.State.deserialize(flow_run.serialized_state)
+
     def set_flow_run_state(
-        self, flow_run_id: str, version: int, state: "prefect.engine.state.State"
+        self,
+        flow_run_id: str,
+        state: "prefect.engine.state.State",
+        version: int = None,
     ) -> "prefect.engine.state.State":
         """
         Sets new state for a flow run in the database.
 
         Args:
             - flow_run_id (str): the id of the flow run to set state for
-            - version (int): the current version of the flow run state
             - state (State): the new state for this flow run
+            - version (int, optional): the current version of the flow run state. This is optional
+                but it can be supplied to enforce version-locking.
 
         Returns:
             - State: the state the current flow run should be considered in
@@ -1052,23 +1154,23 @@ class Client:
         Returns:
             - List[State]: a list of Cached states created after the given date
         """
-        where_clause = {
+        args = {
             "where": {
                 "state": {"_eq": "Cached"},
-                "_or": [
-                    {
-                        "_and": [
-                            {"cache_key": {"_eq": cache_key}},
-                            {"cache_key": {"_is_null": False}},
-                        ]
-                    },
-                    {"task_id": {"_eq": task_id}},
-                ],
                 "state_timestamp": {"_gte": created_after.isoformat()},
             },
             "order_by": {"state_timestamp": EnumValue("desc")},
-        }
-        query = {"query": {with_args("task_run", where_clause): "serialized_state"}}
+            "limit": 100,
+        }  # type: Dict[str, Any]
+
+        # if a cache key was provided, match it against all tasks
+        if cache_key is not None:
+            args["where"].update({"cache_key": {"_eq": cache_key}})
+        # otherwise match against only this task, across all cache keys
+        else:
+            args["where"].update({"task_id": {"_eq": task_id}})
+
+        query = {"query": {with_args("task_run", args): "serialized_state"}}
         result = self.graphql(query)  # type: Any
         deserializer = prefect.engine.state.State.deserialize
         valid_states = [
@@ -1141,11 +1243,33 @@ class Client:
             state=state,
         )
 
+    def get_task_run_state(self, task_run_id: str) -> "prefect.engine.state.State":
+        """
+        Retrieves the current state for a task run.
+
+        Args:
+            - task_run_id (str): the id for this task run
+
+        Returns:
+            - State: a Prefect State object
+        """
+        query = {
+            "query": {
+                with_args("task_run_by_pk", {"id": task_run_id}): {
+                    "serialized_state": True,
+                }
+            }
+        }
+
+        task_run = self.graphql(query).data.task_run_by_pk
+
+        return prefect.engine.state.State.deserialize(task_run.serialized_state)
+
     def set_task_run_state(
         self,
         task_run_id: str,
-        version: int,
         state: "prefect.engine.state.State",
+        version: int = None,
         cache_for: datetime.timedelta = None,
     ) -> "prefect.engine.state.State":
         """
@@ -1153,8 +1277,9 @@ class Client:
 
         Args:
             - task_run_id (str): the id of the task run to set state for
-            - version (int): the current version of the task run state
             - state (State): the new state for this task run
+            - version (int, optional): the current version of the task run state. This is optional
+                but it can be supplied to enforce version-locking.
             - cache_for (timedelta, optional): how long to store the result of this task for,
                 using the serializer set in config; if not provided, no caching occurs
 

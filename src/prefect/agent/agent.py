@@ -149,7 +149,7 @@ class Agent:
 
         self.logger.debug(f"Prefect backend: {config.backend}")
 
-        self.client = Client(api_token=token)
+        self.client = Client(api_server=config.cloud.api, api_token=token)
 
     def _verify_token(self, token: str) -> None:
         """
@@ -453,7 +453,11 @@ class Agent:
         result = self.client.graphql(
             mutation,
             variables={
-                "input": {"before": now.isoformat(), "labels": list(self.labels)}
+                "input": {
+                    "before": now.isoformat(),
+                    "labels": list(self.labels),
+                    "tenant_id": self.client._active_tenant_id,
+                }
             },
         )
 
@@ -480,7 +484,7 @@ class Agent:
 
         self.logger.debug(msg)
 
-        # Query metadata fow flow runs found in queue
+        # Query metadata for flow runs found in queue
         query = {
             "query": {
                 with_args(
@@ -511,7 +515,14 @@ class Agent:
                     "state": True,
                     "serialized_state": True,
                     "parameters": True,
-                    "flow": {"id", "name", "environment", "storage", "version"},
+                    "flow": {
+                        "id",
+                        "name",
+                        "environment",
+                        "storage",
+                        "version",
+                        "core_version",
+                    },
                     with_args(
                         "task_runs",
                         {
