@@ -11,10 +11,10 @@ import prefect
 
 try:
     from jira import JIRA
-except ImportError:
+except ImportError as import_error:
     raise ImportError(
         'Using `jira_notifier` requires Prefect to be installed with the "jira" extra.'
-    )
+    ) from import_error
 
 if TYPE_CHECKING:
     import prefect.engine.state
@@ -122,7 +122,7 @@ def jira_notifier(
     ignore_states = ignore_states or []
     only_states = only_states or []
 
-    if any([isinstance(new_state, ignored) for ignored in ignore_states]):
+    if any(isinstance(new_state, ignored) for ignored in ignore_states):
         return new_state
 
     if only_states and not any(

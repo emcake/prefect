@@ -35,12 +35,12 @@ class _SecretMapping(Mapping):
         if out is None:
             try:
                 out = Secret(key).get()
-            except ValueError:
+            except ValueError as exc:
                 msg = (
                     "Template value '{}' does not refer to an "
                     "environment variable or Prefect secret."
                 )
-                raise RuntimeError(msg.format(key))
+                raise RuntimeError(msg.format(key)) from exc
         return out  # type: ignore
 
     def __iter__(self) -> Iterator[Any]:
@@ -131,6 +131,7 @@ class Webhook(Storage):
             options
 
     Including Sensitive Data
+
     ------------------------
 
     It is common for requests used with this storage to need access to
@@ -381,7 +382,7 @@ class Webhook(Storage):
                     "be set directly"
                 )
                 self.logger.warning(msg)
-                warnings.warn(msg, RuntimeWarning)
+                warnings.warn(msg, RuntimeWarning, stacklevel=2)
             build_request_kwargs["data"] = data
 
             response = req_function(**build_request_kwargs)  # type: ignore

@@ -50,7 +50,7 @@ def make_env(fname=None):
         POSTGRES_DATA_PATH=config.server.database.volume_path,
     )
 
-    UI_ENV = dict(GRAPHQL_URL=config.server.ui.graphql_url)
+    UI_ENV = dict(APOLLO_URL=config.server.ui.apollo_url)
 
     HASURA_ENV = dict(HASURA_HOST_PORT=config.server.hasura.host_port)
 
@@ -218,21 +218,21 @@ def start(
 
     \b
     Options:
-        --version, -v       TEXT    The server image versions to use (for example, '0.1.0' or
-                                    'master'). Defaults to `core-a.b.c` where `a.b.c.` is the version
-                                    of Prefect Core currently running.
+        --version, -v       TEXT    The server image versions to use (for example, '0.1.0'
+                                    or 'master'). Defaults to `core-a.b.c` where `a.b.c.`
+                                    is the version of Prefect Core currently running.
         --ui-version, -uv   TEXT    The UI image version to use (for example, '0.1.0' or
-                                    'master'). Defaults to `core-a.b.c` where `a.b.c.` is the version
-                                    of Prefect Core currently running.
+                                    'master'). Defaults to `core-a.b.c` where `a.b.c.` is
+                                    the version of Prefect Core currently running.
         --skip-pull                 Flag to skip pulling new images (if available)
-        --no-upgrade, -n            Flag to avoid running a database upgrade when the database
-                                    spins up
+        --no-upgrade, -n            Flag to avoid running a database upgrade when the
+                                    database spins up
         --no-ui, -u                 Flag to avoid starting the UI
 
     \b
         --postgres-port     TEXT    Port used to serve Postgres, defaults to '5432'
-        --hasura-port       TEXT    Port used to serve Hasura, defaults to '3001'
-        --graphql-port      TEXT    Port used to serve the GraphQL API, defaults to '4001'
+        --hasura-port       TEXT    Port used to serve Hasura, defaults to '3000'
+        --graphql-port      TEXT    Port used to serve the GraphQL API, defaults to '4201'
         --ui-port           TEXT    Port used to serve the UI, defaults to '8080'
         --server-port       TEXT    Port used to serve the Core server, defaults to '4200'
 
@@ -325,6 +325,9 @@ def start(
         )
         env.update(PREFECT_SERVER_DB_CMD=cmd)
 
+    # Pass the Core version so the Server API can return it
+    env.update(PREFECT_CORE_VERSION=prefect.__version__)
+
     proc = None
     try:
         if not skip_pull:
@@ -372,7 +375,7 @@ def start(
 
 def ascii_welcome(ui_port="8080"):
     ui_url = click.style(
-        f"https://localhost:{ui_port}", fg="white", bg="blue", bold=True
+        f"http://localhost:{ui_port}", fg="white", bg="blue", bold=True
     )
     docs_url = click.style("https://docs.prefect.io", fg="white", bg="blue", bold=True)
 
@@ -397,14 +400,18 @@ def ascii_welcome(ui_port="8080"):
 
 @server.command(hidden=True)
 @click.option(
-    "--name", "-n", help="The name of a tenant to create", hidden=True,
+    "--name",
+    "-n",
+    help="The name of a tenant to create",
+    hidden=True,
 )
 @click.option(
-    "--slug", "-s", help="The slug of a tenant to create", hidden=True,
+    "--slug",
+    "-s",
+    help="The slug of a tenant to create",
+    hidden=True,
 )
-def create_tenant(
-    name, slug,
-):
+def create_tenant(name, slug):
     """
     This command creates a tenant for the Prefect Server
 

@@ -2,7 +2,9 @@ import collections
 import collections.abc
 import copy
 import functools
+import hashlib
 import inspect
+import json
 import os
 import tempfile
 import time
@@ -35,11 +37,13 @@ import prefect.schedules
 from prefect.core.edge import Edge
 from prefect.core.parameter import Parameter
 from prefect.core.task import Task
+from prefect.engine.executors import Executor
 from prefect.engine.result import NoResult, Result
 from prefect.engine.result_handlers import ResultHandler
 from prefect.engine.results import ResultHandlerResult
 from prefect.environments import Environment
 from prefect.environments.storage import Storage, get_default_storage_class
+from prefect.run_configs import RunConfig
 from prefect.utilities import diagnostics, logging
 from prefect.utilities.configuration import set_temporary_config
 from prefect.utilities.notifications import callback_factory
@@ -112,8 +116,13 @@ class Flow:
     Args:
         - name (str): The name of the flow. Cannot be `None` or an empty string
         - schedule (prefect.schedules.Schedule, optional): A default schedule for the flow
+        - executor (prefect.engine.executors.Executor, optional): The executor that the flow
+           should use. If `None`, the default executor configured in the runtime environment
+           will be used.
         - environment (prefect.environments.Environment, optional): The environment
            that the flow should be run in. If `None`, a `LocalEnvironment` will be created.
+        - run_config (prefect.run_configs.RunConfig, optional): The runtime
+           configuration to use when deploying this flow.
         - storage (prefect.environments.storage.Storage, optional): The unit of storage
             that the flow will be written into.
         - tasks ([Task], optional): If provided, a list of tasks that will initialize the flow
@@ -144,7 +153,9 @@ class Flow:
         self,
         name: str,
         schedule: prefect.schedules.Schedule = None,
+        executor: Executor = None,
         environment: Environment = None,
+        run_config: RunConfig = None,
         storage: Storage = None,
         tasks: Iterable[Task] = None,
         edges: Iterable[Edge] = None,
@@ -163,11 +174,14 @@ class Flow:
         self.name = name
         self.logger = logging.get_logger(self.name)
         self.schedule = schedule
+        self.executor = executor
         self.environment = environment or prefect.environments.LocalEnvironment()
+        self.run_config = run_config
         self.storage = storage
         if result_handler:
             warnings.warn(
-                "Result Handlers are deprecated; please use the new style Result classes instead."
+                "Result Handlers are deprecated; please use the new style Result classes instead.",
+                stacklevel=2,
             )
             self.result = ResultHandlerResult.from_result_handler(
                 result_handler
@@ -229,6 +243,7 @@ class Flow:
         new = copy.copy(self)
         # create a new cache
         new._cache = dict()
+        new.constants = self.constants.copy()
         new.tasks = self.tasks.copy()
         new.edges = self.edges.copy()
         new.set_reference_tasks(self._reference_tasks)
@@ -318,12 +333,13 @@ class Flow:
                 validate=False,
             )
 
-        # update auxiliary task collections
-        ref_tasks = self.reference_tasks()
-        new_refs = [t for t in ref_tasks if t != old] + (
-            [new] if old in ref_tasks else []
-        )
-        self.set_reference_tasks(new_refs)
+        if self._reference_tasks:
+            # update auxiliary task collections
+            ref_tasks = self.reference_tasks()
+            new_refs = [t for t in ref_tasks if t != old] + (
+                [new] if old in ref_tasks else []
+            )
+            self.set_reference_tasks(new_refs)
 
         if validate:
             self.validate()
@@ -344,7 +360,6 @@ class Flow:
         with prefect.context(flow=self, _unused_task_tracker=unused_task_tracker):
             yield self
 
-        # constants are not tracked at the flow level
         if unused_task_tracker.difference(self.tasks):
             warnings.warn(
                 "Tasks were created but not added to the flow: "
@@ -353,7 +368,8 @@ class Flow:
                 "inside a `with flow:` block but not added to the flow either "
                 "explicitly or as the input to another task. For more information, see "
                 "https://docs.prefect.io/core/advanced_tutorials/"
-                "task-guide.html#adding-tasks-to-flows."
+                "task-guide.html#adding-tasks-to-flows.",
+                stacklevel=2,
             )
 
     def __enter__(self) -> "Flow":
@@ -519,9 +535,9 @@ class Flow:
             self.tasks.add(task)
             self._cache.clear()
 
-            # Parameters must be root tasks
+            # Parameters and constants must be root tasks
             # All other new tasks should be added to the current case/resource (if any)
-            if not isinstance(task, Parameter):
+            if not isinstance(task, (Parameter, prefect.tasks.core.constants.Constant)):
                 case = prefect.context.get("case", None)
                 if case is not None:
                     case.add_task(task, self)
@@ -600,6 +616,7 @@ class Flow:
             self.constants[edge.downstream_task].update(
                 {edge.key: edge.upstream_task.value}
             )
+            self.add_task(edge.downstream_task)
             return edge
 
         # add the edge
@@ -999,6 +1016,11 @@ class Flow:
             "flow_run_id", kwargs.pop("flow_run_id", str(uuid.uuid4()))
         )
 
+        # set flow_run_name from args or uuid if flow_run_name is not an argument
+        flow_run_context.setdefault(
+            "flow_run_name", kwargs.pop("flow_run_name", str(uuid.uuid4()))
+        )
+
         # run this flow indefinitely, so long as its schedule has future dates
         while True:
 
@@ -1008,7 +1030,7 @@ class Flow:
                 scheduled_start_time=next_run_time,
                 flow_id=self.name,
                 flow_run_id=flow_run_context["flow_run_id"],
-                flow_run_name=str(uuid.uuid4()),
+                flow_run_name=flow_run_context["flow_run_name"],
             )
 
             if flow_state.is_scheduled():
@@ -1162,7 +1184,8 @@ class Flow:
         if prefect.context.get("loading_flow", False):
             warnings.warn(
                 "Attempting to call `flow.run` during execution of flow file will lead to "
-                "unexpected results."
+                "unexpected results.",
+                stacklevel=2,
             )
             return None
 
@@ -1267,12 +1290,12 @@ class Flow:
 
         try:
             import graphviz
-        except ImportError:
+        except ImportError as exc:
             msg = (
                 "This feature requires graphviz.\n"
                 "Try re-installing prefect with `pip install 'prefect[viz]'`"
             )
-            raise ImportError(msg)
+            raise ImportError(msg) from exc
 
         def get_color(task: Task, map_index: int = None) -> str:
             assert flow_state
@@ -1372,20 +1395,23 @@ class Flow:
             try:
                 from IPython import get_ipython
 
-                assert get_ipython().config.get("IPKernelApp") is not None
+                in_ipython = get_ipython().config.get("IPKernelApp") is not None
             except Exception:
+                in_ipython = False
+
+            if not in_ipython:
                 with tempfile.NamedTemporaryFile(delete=False) as tmp:
                     tmp.close()
                     try:
                         graph.render(tmp.name, view=True)
-                    except graphviz.backend.ExecutableNotFound:
+                    except graphviz.backend.ExecutableNotFound as exc:
                         msg = (
                             "It appears you do not have Graphviz installed, or it is not on your "
                             "PATH. Please install Graphviz from http://www.graphviz.org/download/. "
                             "And note: just installing the `graphviz` python package is not "
                             "sufficient!"
                         )
-                        raise graphviz.backend.ExecutableNotFound(msg)
+                        raise graphviz.backend.ExecutableNotFound(msg) from exc
                     finally:
                         os.unlink(tmp.name)
 
@@ -1418,6 +1444,7 @@ class Flow:
         flow_copy = self.copy()
         for task, slug in flow_copy.slugs.items():
             task.slug = slug
+
         serialized = schema(exclude=["storage"]).dump(flow_copy)
 
         if build:
@@ -1429,7 +1456,8 @@ class Flow:
                 warnings.warn(
                     "A flow with the same name is already contained in storage; if you "
                     "changed your Flow since the last build, you might experience "
-                    "unexpected issues and should re-create your storage object."
+                    "unexpected issues and should re-create your storage object.",
+                    stacklevel=2,
                 )
             storage = self.storage.build()  # type: Optional[Storage]
         else:
@@ -1438,6 +1466,30 @@ class Flow:
         serialized.update(schema(only=["storage"]).dump({"storage": storage}))
 
         return serialized
+
+    def serialized_hash(self, build: bool = False) -> str:
+        """
+        Generate a deterministic hash of the serialized flow. This is useful for
+        determining if the flow has changed. If this hash is equal to a previous hash,
+        no new information would be passed to the server on a call to `flow.register()`
+
+        Note that this will not always detect code changes since the task code is not
+        included in the serialized flow sent to the server. That said, as long as the
+        flow is "built" during registration, the code changes will be in effect even
+        if a new version is not registered with the server.
+
+        Args:
+            - build (bool, optional):  if `True`, the flow's environment is built
+                prior to serialization. Passed through to `Flow.serialize()`.
+
+        Returns:
+            - str: the hash of the serialized flow
+        """
+        serialized_flow = self.serialize(build)
+
+        return hashlib.sha256(
+            json.dumps(serialized_flow, sort_keys=True).encode()
+        ).hexdigest()
 
     # Diagnostics  ----------------------------------------------------------------
 
@@ -1515,7 +1567,10 @@ class Flow:
             "logging.log_to_cloud": log_to_cloud,
         }
         with set_temporary_config(temp_config):
-            labels = list(self.environment.labels) if self.environment.labels else []
+            if self.run_config is not None:
+                labels = list(self.run_config.labels or ())
+            else:
+                labels = list(self.environment.labels or ())
             agent = prefect.agent.local.LocalAgent(
                 labels=labels, show_flow_logs=show_flow_logs
             )
@@ -1529,6 +1584,7 @@ class Flow:
         set_schedule_active: bool = True,
         version_group_id: str = None,
         no_url: bool = False,
+        idempotency_key: str = None,
         **kwargs: Any,
     ) -> Union[str, None]:
         """
@@ -1550,6 +1606,9 @@ class Flow:
                 Flow's project and name will be used.
             - no_url (bool, optional): if `True`, the stdout from this function will not
                 contain the URL link to the newly-registered flow in the Cloud UI
+            - idempotency_key (str, optional): a key that, if matching the most recent
+                registration call for this flow group, will prevent the creation of
+                another flow version and return the existing flow id instead.
             - **kwargs (Any): if instantiating a Storage object from default settings, these
                 keyword arguments will be passed to the initialization method of the default
                 Storage class
@@ -1557,10 +1616,24 @@ class Flow:
         Returns:
             - str: the ID of the flow that was registered
         """
+        if hasattr(self, "_ctx"):
+            raise ValueError(
+                "Don't call `flow.register()` from within a `Flow` context manager.\n\n"
+                "Do:\n\n"
+                "  with Flow(...) as flow:\n"
+                "      ...\n"
+                "  flow.register(...)\n\n"
+                "Don't:\n\n"
+                "  with Flow(...) as flow:\n"
+                "      ...\n"
+                "      flow.register(...)"
+            )
+
         if prefect.context.get("loading_flow", False):
             warnings.warn(
                 "Attempting to call `flow.register` during execution of flow file will lead "
-                "to unexpected results."
+                "to unexpected results.",
+                stacklevel=2,
             )
             return None
 
@@ -1568,10 +1641,10 @@ class Flow:
             self.storage = get_default_storage_class()(**kwargs)
 
         # add auto-labels for various types of storage
-        self.environment.labels.update(self.storage.labels)
-
-        if labels:
-            self.environment.labels.update(labels)
+        for obj in [self.environment, self.run_config]:
+            if obj is not None:
+                obj.labels.update(self.storage.labels)
+                obj.labels.update(labels or ())
 
         # register the flow with a default result handler if one not provided
         if not self.result:
@@ -1586,6 +1659,7 @@ class Flow:
             set_schedule_active=set_schedule_active,
             version_group_id=version_group_id,
             no_url=no_url,
+            idempotency_key=idempotency_key,
         )
         return registered_flow
 

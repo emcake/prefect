@@ -12,6 +12,12 @@ class LocalResult(Result):
     """
     Result that is written to and retrieved from the local file system.
 
+    **Note**: "local" refers to where the flow's tasks execute, which is not
+    necessarily the same as the place that `flow.run()` runs from. So, for
+    example, if you use a `LocalEnvironment` with a `DaskExecutor` pointed at
+    a remote Dask cluster, `LocalResult` files will be written to the Dask
+    workers' file system.
+
     **Note**: If this result raises a `PermissionError` that could mean it is attempting
     to write results to a directory that it is not permissioned for. In that case it may be
     helpful to specify a specific `dir` for that result instance.
@@ -84,13 +90,13 @@ class LocalResult(Result):
 
         return new
 
-    def write(self, value: Any, **kwargs: Any) -> Result:
+    def write(self, value_: Any, **kwargs: Any) -> Result:
         """
         Writes the result to a location in the local file system and returns a new `Result`
         object with the result's location.
 
         Args:
-            - value (Any): the value to write; will then be stored as the `value` attribute
+            - value_ (Any): the value to write; will then be stored as the `value` attribute
                 of the returned `Result` instance
             - **kwargs (optional): if provided, will be used to format the location template
                 to determine the location to write to
@@ -99,7 +105,7 @@ class LocalResult(Result):
             - Result: returns a new `Result` with both `value` and `location` attributes
         """
         new = self.format(**kwargs)
-        new.value = value
+        new.value = value_
         assert new.location is not None
 
         self.logger.debug("Starting to upload result to {}...".format(new.location))

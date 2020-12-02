@@ -14,7 +14,8 @@ if TYPE_CHECKING:
 
 class Storage(metaclass=ABCMeta):
     """
-    Base interface for Storage objects.
+    Base interface for Storage objects. All kwargs present in this base class are valid on storage
+    subclasses.
 
     Args:
         - result (Result, optional): a default result to use for
@@ -41,6 +42,7 @@ class Storage(metaclass=ABCMeta):
         self.result = result
         self.secrets = secrets or []
         self.stored_as_script = stored_as_script
+
         self._labels = labels or []
         if add_default_labels is None:
             self.add_default_labels = config.flows.defaults.storage.add_default_labels

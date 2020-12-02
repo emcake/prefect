@@ -23,12 +23,23 @@ def test_fargate_agent_init(monkeypatch, cloud_api):
     assert agent.boto3_client
 
 
+def test_fargate_agent_init_with_network_mode(monkeypatch, cloud_api):
+    boto3_client = MagicMock()
+    monkeypatch.setattr("boto3.client", boto3_client)
+
+    agent = FargateAgent(networkMode="bridge")
+    assert agent
+    assert agent.boto3_client
+    assert agent.task_definition_kwargs["networkMode"] == "bridge"
+
+
 def test_fargate_agent_config_options_default(monkeypatch, cloud_api):
     boto3_client = MagicMock()
     monkeypatch.setattr("boto3.client", boto3_client)
 
     agent = FargateAgent()
     assert agent
+    assert agent.agent_config_id == None
     assert agent.labels == []
     assert agent.name == "agent"
     assert agent.task_definition_kwargs == {}
@@ -77,11 +88,12 @@ def test_parse_task_definition_kwargs(monkeypatch, cloud_api):
     boto3_client = MagicMock()
     monkeypatch.setattr("boto3.client", boto3_client)
 
-    agent = FargateAgent()
+    agent = FargateAgent(networkMode="bridge")
 
     kwarg_dict = {
         "taskRoleArn": "test",
         "executionRoleArn": "test",
+        "networkMode": "bridge",
         "volumes": "test",
         "placementConstraints": "test",
         "cpu": "test",
@@ -110,7 +122,7 @@ def test_parse_task_definition_kwargs_errors(monkeypatch, cloud_api):
     agent = FargateAgent()
 
     kwarg_dict = {
-        "placementConstraints": "taskRoleArn='arn:aws:iam::543216789012:role/Dev",
+        "placementConstraints": "taskRoleArn='arn:aws:iam::543216789012:role/Dev"
     }
 
     (
@@ -358,7 +370,14 @@ def test_parse_task_kwargs_invalid_value_removed(monkeypatch, cloud_api):
 
     agent = FargateAgent()
 
-    kwarg_dict = {"test": "not_real", "containerDefinitions": [{"test": "not_real",}]}
+    kwarg_dict = {
+        "test": "not_real",
+        "containerDefinitions": [
+            {
+                "test": "not_real",
+            }
+        ],
+    }
 
     (
         task_definition_kwargs,
@@ -1964,7 +1983,7 @@ def test_fargate_agent_start_max_polls_count(monkeypatch, runner_token, cloud_ap
 
     assert on_shutdown.call_count == 1
     assert agent_process.call_count == 2
-    assert heartbeat.call_count == 2
+    assert heartbeat.call_count == 1
 
 
 def test_fargate_agent_start_max_polls_zero(monkeypatch, runner_token, cloud_api):
@@ -1990,7 +2009,7 @@ def test_fargate_agent_start_max_polls_zero(monkeypatch, runner_token, cloud_api
 
     assert on_shutdown.call_count == 1
     assert agent_process.call_count == 0
-    assert heartbeat.call_count == 0
+    assert heartbeat.call_count == 1
 
 
 def test_agent_configuration_utility(monkeypatch, cloud_api):

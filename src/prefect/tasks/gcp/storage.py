@@ -1,5 +1,7 @@
 import uuid
 import warnings
+from typing import Tuple, Union
+import io
 
 from google.cloud.exceptions import NotFound
 
@@ -18,6 +20,7 @@ class GCSBaseTask(Task):
         project: str = None,
         create_bucket: bool = False,
         encryption_key_secret: str = None,
+        request_timeout: Union[float, Tuple[float, float]] = 60,
         **kwargs
     ):
         self.bucket = bucket
@@ -29,8 +32,10 @@ class GCSBaseTask(Task):
                 "The `encryption_key_secret` argument is deprecated. Use a `Secret` task "
                 "to pass the key value at runtime instead.",
                 UserWarning,
+                stacklevel=2,
             )
         self.encryption_key_secret = encryption_key_secret
+        self.request_timeout = request_timeout
         super().__init__(**kwargs)
 
     def _retrieve_bucket(self, client, bucket: str, create_bucket: bool):
@@ -62,6 +67,7 @@ class GCSBaseTask(Task):
                 "The `encryption_key_secret` argument is deprecated. Use a `Secret` task "
                 "to pass the credentials value at runtime instead.",
                 UserWarning,
+                stacklevel=2,
             )
             encryption_key = Secret(encryption_key_secret).get()
 
@@ -79,6 +85,9 @@ class GCSDownload(GCSBaseTask):
             If not provided, will be inferred from your Google Cloud credentials
         - encryption_key_secret (str, optional, DEPRECATED): the name of the Prefect Secret
             storing an optional `encryption_key` to be used when downloading the Blob
+        - request_timeout (Union[float, Tuple[float, float]], optional): default number of
+            seconds the transport should wait for the server response.
+            Can also be passed as a tuple (connect_timeout, read_timeout).
         - **kwargs (dict, optional): additional keyword arguments to pass to the Task constructor
 
     Note that the design of this task allows you to initialize a _template_ with default
@@ -93,6 +102,7 @@ class GCSDownload(GCSBaseTask):
         blob: str = None,
         project: str = None,
         encryption_key_secret: str = None,
+        request_timeout: Union[float, Tuple[float, float]] = 60,
         **kwargs
     ):
         super().__init__(
@@ -100,10 +110,13 @@ class GCSDownload(GCSBaseTask):
             blob=blob,
             project=project,
             encryption_key_secret=encryption_key_secret,
+            request_timeout=request_timeout,
             **kwargs
         )
 
-    @defaults_from_attrs("blob", "bucket", "project", "encryption_key_secret")
+    @defaults_from_attrs(
+        "blob", "bucket", "project", "encryption_key_secret", "request_timeout"
+    )
     def run(
         self,
         bucket: str = None,
@@ -112,6 +125,7 @@ class GCSDownload(GCSBaseTask):
         credentials: dict = None,
         encryption_key: str = None,
         encryption_key_secret: str = None,
+        request_timeout: Union[float, Tuple[float, float]] = 60,
     ) -> str:
         """
         Run method for this Task.  Invoked by _calling_ this Task after initialization
@@ -132,6 +146,9 @@ class GCSDownload(GCSBaseTask):
             - encryption_key (str, optional): an encryption key
             - encryption_key_secret (str, optional, DEPRECATED): the name of the Prefect Secret
                 storing an optional `encryption_key` to be used when uploading the Blob
+            - request_timeout (Union[float, Tuple[float, float]], optional): the number of
+                seconds the transport should wait for the server response.
+                Can also be passed as a tuple (connect_timeout, read_timeout).
 
         Returns:
             - str: the data from the blob, as a string
@@ -157,14 +174,13 @@ class GCSDownload(GCSBaseTask):
             encryption_key=encryption_key,
             encryption_key_secret=encryption_key_secret,
         )
-        data = gcs_blob.download_as_string()
+        data = gcs_blob.download_as_string(timeout=request_timeout)
         return data
 
 
 class GCSUpload(GCSBaseTask):
     """
-    Task template for uploading data to Google Cloud Storage.  Requires the data already
-    be a string.
+    Task template for uploading data to Google Cloud Storage.  Data can be a string or bytes.
 
     Args:
         - bucket (str): default bucket name to upload to
@@ -176,6 +192,9 @@ class GCSUpload(GCSBaseTask):
             does not exist, otherwise an Exception is raised. Defaults to `False`.
         - encryption_key_secret (str, optional, DEPRECATED): the name of the Prefect Secret
             storing an optional `encryption_key` to be used when uploading the Blob
+        - request_timeout (Union[float, Tuple[float, float]], optional): default number of
+            seconds the transport should wait for the server response.
+            Can also be passed as a tuple (connect_timeout, read_timeout).
         - **kwargs (dict, optional): additional keyword arguments to pass to the Task constructor
 
     Note that the design of this task allows you to initialize a _template_ with default
@@ -191,6 +210,7 @@ class GCSUpload(GCSBaseTask):
         project: str = None,
         create_bucket: bool = False,
         encryption_key_secret: str = None,
+        request_timeout: Union[float, Tuple[float, float]] = 60,
         **kwargs
     ):
         super().__init__(
@@ -199,15 +219,21 @@ class GCSUpload(GCSBaseTask):
             project=project,
             create_bucket=create_bucket,
             encryption_key_secret=encryption_key_secret,
+            request_timeout=request_timeout,
             **kwargs
         )
 
     @defaults_from_attrs(
-        "bucket", "blob", "project", "create_bucket", "encryption_key_secret",
+        "bucket",
+        "blob",
+        "project",
+        "create_bucket",
+        "encryption_key_secret",
+        "request_timeout",
     )
     def run(
         self,
-        data: str,
+        data: Union[str, bytes],
         bucket: str = None,
         blob: str = None,
         project: str = None,
@@ -215,6 +241,9 @@ class GCSUpload(GCSBaseTask):
         encryption_key: str = None,
         create_bucket: bool = False,
         encryption_key_secret: str = None,
+        content_type: str = None,
+        content_encoding: str = None,
+        request_timeout: Union[float, Tuple[float, float]] = 60,
     ) -> str:
         """
         Run method for this Task.  Invoked by _calling_ this Task after initialization
@@ -224,7 +253,7 @@ class GCSUpload(GCSBaseTask):
         provided _either_ at initialization _or_ as arguments.
 
         Args:
-            - data (str): the data to upload; must already be represented as a string
+            - data (Union[str, bytes]): the data to upload; can be either string or bytes
             - bucket (str, optional): the bucket name to upload to
             - blob (str, optional): blob name to upload to
                 a string beginning with `prefect-` and containing the Task Run ID will be used
@@ -239,6 +268,11 @@ class GCSUpload(GCSBaseTask):
                 if it does not exist, otherwise an Exception is raised. Defaults to `False`.
             - encryption_key_secret (str, optional, DEPRECATED): the name of the Prefect Secret
                 storing an optional `encryption_key` to be used when uploading the Blob.
+            - content_type (str, optional): HTTP ‘Content-Type’ header for this object.
+            - content_encoding (str, optional): HTTP ‘Content-Encoding’ header for this object.
+            - request_timeout (Union[float, Tuple[float, float]], optional): the number of
+                seconds the transport should wait for the server response.
+                Can also be passed as a tuple (connect_timeout, read_timeout).
 
         Raises:
             - google.cloud.exception.NotFound: if `create_bucket=False` and the bucket name is
@@ -262,7 +296,19 @@ class GCSUpload(GCSBaseTask):
             encryption_key=encryption_key,
             encryption_key_secret=encryption_key_secret,
         )
-        gcs_blob.upload_from_string(data)
+
+        # Upload
+        if type(data) == str:
+            gcs_blob.upload_from_string(data, timeout=request_timeout)
+        elif type(data) == bytes:
+            # Set content type and encoding if supplied.
+            # This is likely only desirable if uploading gzip data:
+            # https://cloud.google.com/storage/docs/metadata#content-encoding
+            if content_type:
+                gcs_blob.content_type = content_type
+            if content_encoding:
+                gcs_blob.content_encoding = content_encoding
+            gcs_blob.upload_from_file(io.BytesIO(data), timeout=request_timeout)
         return gcs_blob.name
 
 
@@ -281,6 +327,9 @@ class GCSCopy(GCSBaseTask):
         - dest_blob (str, optional): default destination blob name.
         - project (str, optional): default Google Cloud project to work within.
             If not provided, will be inferred from your Google Cloud credentials
+        - request_timeout (Union[float, Tuple[float, float]], optional): default number of
+            seconds the transport should wait for the server response.
+            Can also be passed as a tuple (connect_timeout, read_timeout).
         - **kwargs (dict, optional): additional keyword arguments to pass to the
             Task constructor
 
@@ -297,6 +346,7 @@ class GCSCopy(GCSBaseTask):
         dest_bucket: str = None,
         dest_blob: str = None,
         project: str = None,
+        request_timeout: Union[float, Tuple[float, float]] = 60,
         **kwargs
     ):
         self.source_bucket = source_bucket
@@ -304,10 +354,15 @@ class GCSCopy(GCSBaseTask):
         self.dest_bucket = dest_bucket
         self.dest_blob = dest_blob
 
-        super().__init__(project=project, **kwargs)
+        super().__init__(project=project, request_timeout=request_timeout, **kwargs)
 
     @defaults_from_attrs(
-        "source_bucket", "source_blob", "dest_bucket", "dest_blob", "project",
+        "source_bucket",
+        "source_blob",
+        "dest_bucket",
+        "dest_blob",
+        "project",
+        "request_timeout",
     )
     def run(
         self,
@@ -317,6 +372,7 @@ class GCSCopy(GCSBaseTask):
         dest_blob: str = None,
         project: str = None,
         credentials: dict = None,
+        request_timeout: Union[float, Tuple[float, float]] = 60,
     ) -> str:
         """
         Run method for this Task. Invoked by _calling_ this Task after initialization
@@ -336,6 +392,9 @@ class GCSCopy(GCSBaseTask):
                 You should provide these at runtime with an upstream Secret task.  If not
                 provided, Prefect will first check `context` for `GCP_CREDENTIALS` and lastly
                 will use default Google client logic.
+            - request_timeout (Union[float, Tuple[float, float]], optional): the number of
+                seconds the transport should wait for the server response.
+                Can also be passed as a tuple (connect_timeout, read_timeout).
 
         Returns:
             - str: the name of the destination blob
@@ -360,7 +419,10 @@ class GCSCopy(GCSBaseTask):
         dest_bucket_obj = client.get_bucket(dest_bucket)
         # copy from source blob to dest bucket
         source_bucket_obj.copy_blob(
-            blob=source_blob_obj, destination_bucket=dest_bucket_obj, new_name=dest_blob
+            blob=source_blob_obj,
+            destination_bucket=dest_bucket_obj,
+            new_name=dest_blob,
+            timeout=request_timeout,
         )
 
         return dest_blob

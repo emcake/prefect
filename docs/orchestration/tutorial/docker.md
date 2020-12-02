@@ -34,7 +34,11 @@ Docker Storage accepts an optional keyword argument `registry_url` if this is no
 If you do specify a registry URL then the image will be pushed to a container registry upon flow registration.
 
 ```python
-flow.storage = Docker(registry_url="docker.io/<dockerhub_user>/<dockerhub_repo>")
+# Docker Hub (docker.io)
+flow.storage = Docker(registry_url="<dockerhub_user>/")
+
+# GCR (gcr.io), etc.
+flow.storage = Docker(registry_url="gcr.io/<project_id>/")
 ```
 
 ## Running a Docker Agent
@@ -42,7 +46,7 @@ flow.storage = Docker(registry_url="docker.io/<dockerhub_user>/<dockerhub_repo>"
 Start the Docker Agent to executing Flow Runs scheduled by the Prefect API:
 
 ```bash
-prefect agent start docker
+prefect agent docker start
 ```
 
 :::tip Runner Token <Badge text="Cloud"/>

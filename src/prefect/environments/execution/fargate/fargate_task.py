@@ -1,6 +1,7 @@
+import operator
 import os
 import warnings
-from typing import Callable, List, TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable, List
 
 import prefect
 from prefect import config
@@ -126,7 +127,9 @@ class FargateTaskEnvironment(Environment, _RunMixin):
         self.task_definition_kwargs, self.task_run_kwargs = self._parse_kwargs(kwargs)
 
         if executor_kwargs is not None:
-            warnings.warn("`executor_kwargs` is deprecated, use `executor` instead")
+            warnings.warn(
+                "`executor_kwargs` is deprecated, use `executor` instead", stacklevel=2
+            )
         if executor is None:
             executor = prefect.engine.get_default_executor_class()(
                 **(executor_kwargs or {})
@@ -246,9 +249,81 @@ class FargateTaskEnvironment(Environment, _RunMixin):
     def _validate_task_definition(
         self, existing_task_definition: dict, task_definition_kwargs: dict
     ) -> None:
+        def format_container_definition(definition: dict) -> dict:
+            """
+            Reformat all object arrays in the containerDefinitions so
+            the keys are comparable for validation. Most of these won't apply
+            to the first container (overriden by Prefect) but it could apply to
+            other containers in the definition, so they are included here.
+
+            The keys that are overriden here are listed in:
+            https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task_definition_parameters.html#container_definitions
+
+            Essentially only the `object array` types need to be overridden since
+            they may be returned from AWS's API out of order.
+            """
+            return {
+                **definition,
+                "environment": {
+                    item["name"]: item["value"]
+                    for item in definition.get("environment", [])
+                },
+                "secrets": {
+                    item["name"]: item["valueFrom"]
+                    for item in definition.get("secrets", [])
+                },
+                "mountPoints": {
+                    item["sourceVolume"]: item
+                    for item in definition.get("mountPoints", [])
+                },
+                "extraHosts": {
+                    item["hostname"]: item["ipAddress"]
+                    for item in definition.get("extraHosts", [])
+                },
+                "volumesFrom": {
+                    item["sourceContainer"]: item
+                    for item in definition.get("volumesFrom", [])
+                },
+                "ulimits": {
+                    item["name"]: item for item in definition.get("ulimits", [])
+                },
+                "portMappings": {
+                    item["containerPort"]: item
+                    for item in definition.get("portMappings", [])
+                },
+                "logConfiguration": {
+                    **definition.get("logConfiguration", {}),
+                    "secretOptions": {
+                        item["name"]: item["valueFrom"]
+                        for item in definition.get("logConfiguration", {}).get(
+                            "secretOptions", []
+                        )
+                    },
+                },
+            }
+
+        givenContainerDefinitions = sorted(
+            [
+                format_container_definition(container_definition)
+                for container_definition in task_definition_kwargs[
+                    "containerDefinitions"
+                ]
+            ],
+            key=operator.itemgetter("name"),
+        )
+        expectedContainerDefinitions = sorted(
+            [
+                format_container_definition(container_definition)
+                for container_definition in existing_task_definition[
+                    "containerDefinitions"
+                ]
+            ],
+            key=operator.itemgetter("name"),
+        )
+
         containerDifferences = [
             "containerDefinition.{idx}.{key} -> Given: {given}, Expected: {expected}".format(
-                idx=idx,
+                idx=container_definition.get("name", idx),
                 key=key,
                 given=value,
                 expected=existing_container_definition.get(key),
@@ -256,14 +331,25 @@ class FargateTaskEnvironment(Environment, _RunMixin):
             for idx, (
                 container_definition,
                 existing_container_definition,
-            ) in enumerate(
-                zip(
-                    task_definition_kwargs["containerDefinitions"],
-                    existing_task_definition["containerDefinitions"],
-                )
-            )
+            ) in enumerate(zip(givenContainerDefinitions, expectedContainerDefinitions))
             for key, value in container_definition.items()
             if value != existing_container_definition.get(key)
+        ]
+
+        arnDifferences = [
+            "{key} -> Given: {given}, Expected: {expected}".format(
+                key=key,
+                given=task_definition_kwargs[key],
+                expected=existing_task_definition.get(key),
+            )
+            for key in _DEFINITION_KWARG_LIST
+            if key.endswith("Arn")
+            and key in task_definition_kwargs
+            and (
+                existing_task_definition.get(key) != task_definition_kwargs[key]
+                and existing_task_definition.get(key, "").split("/")[-1]
+                != task_definition_kwargs[key]
+            )
         ]
 
         otherDifferences = [
@@ -274,11 +360,12 @@ class FargateTaskEnvironment(Environment, _RunMixin):
             )
             for key in _DEFINITION_KWARG_LIST
             if key != "containerDefinitions"
+            and not key.endswith("Arn")
             and key in task_definition_kwargs
             and existing_task_definition.get(key) != task_definition_kwargs[key]
         ]
 
-        differences = containerDifferences + otherDifferences
+        differences = containerDifferences + arnDifferences + otherDifferences
 
         if differences:
             raise ValueError(
@@ -290,7 +377,7 @@ class FargateTaskEnvironment(Environment, _RunMixin):
                     "change the family/taskDefinition name in the FargateTaskEnvironment\n"
                     "for this flow."
                 ).format(
-                    self.task_definition_kwargs.get("family"), "\n\t".join(differences),
+                    self.task_definition_kwargs.get("family"), "\n\t".join(differences)
                 )
             )
 

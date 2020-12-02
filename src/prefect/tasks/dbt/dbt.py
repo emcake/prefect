@@ -30,7 +30,7 @@ class DbtShellTask(ShellTask):
         - helper_script (str, optional): a string representing a shell script, which
             will be executed prior to the `command` in the same process. Can be used to
             change directories, define helper functions, etc. when re-using this Task
-            for different commands in a Flow
+            for different commands in a Flow; can also be provided at runtime
         - shell (string, optional): shell to run the command with; defaults to "bash"
         - return_all (bool, optional): boolean specifying whether this task should return all
             lines of stdout as a list, or just the last line as a string; defaults to `False`
@@ -83,7 +83,7 @@ class DbtShellTask(ShellTask):
         self.overwrite_profiles = overwrite_profiles
         self.profiles_dir = profiles_dir
         self.set_profiles_envar = set_profiles_envar
-        self.dbt_kwargs = dbt_kwargs
+        self.dbt_kwargs = dbt_kwargs or {}
         super().__init__(
             **kwargs,
             command=command,
@@ -94,9 +94,13 @@ class DbtShellTask(ShellTask):
             log_stderr=log_stderr
         )
 
-    @defaults_from_attrs("command", "env", "dbt_kwargs")
+    @defaults_from_attrs("command", "env", "helper_script", "dbt_kwargs")
     def run(
-        self, command: str = None, env: dict = None, dbt_kwargs: dict = None
+        self,
+        command: str = None,
+        env: dict = None,
+        helper_script: str = None,
+        dbt_kwargs: dict = None,
     ) -> str:
         """
         If no profiles.yml file is found or if overwrite_profiles flag is set to True, this
@@ -110,6 +114,10 @@ class DbtShellTask(ShellTask):
                 runs in
             - env (dict, optional): dictionary of environment variables to use for
                 the subprocess
+            - helper_script (str, optional): a string representing a shell script, which
+                will be executed prior to the `command` in the same process. Can be used to
+                change directories, define helper functions, etc. when re-using this Task
+                for different commands in a Flow
              - dbt_kwargs(dict, optional): keyword arguments used to populate the profiles.yml file
 
         Returns:
@@ -122,15 +130,22 @@ class DbtShellTask(ShellTask):
             - prefect.engine.signals.FAIL: if command has an exit code other
                 than 0
         """
+        DEFAULT_PROFILES_DIR = os.path.join(os.path.expanduser("~"), ".dbt")
         profiles_exists = False
         if os.getenv("DBT_PROFILES_DIR"):
-            dbt_profiles_dir = os.getenv("DBT_PROFILES_DIR")
+            dbt_profiles_dir = os.path.expanduser(
+                os.getenv("DBT_PROFILES_DIR", DEFAULT_PROFILES_DIR)
+            )
             profiles_exists = os.path.exists(
                 os.path.join(dbt_profiles_dir, "profiles.yml")
             )
         elif self.profiles_dir:
             profiles_exists = os.path.exists(
                 os.path.join(self.profiles_dir, "profiles.yml")
+            )
+        else:
+            profiles_exists = os.path.exists(
+                os.path.join(DEFAULT_PROFILES_DIR, "profiles.yml")
             )
 
         dbt_kwargs = {**self.dbt_kwargs, **(dbt_kwargs or {})}
@@ -143,7 +158,17 @@ class DbtShellTask(ShellTask):
                 }
             }
 
-            profile_path = os.path.join(self.profiles_dir, "profiles.yml")
+            if not self.profiles_dir:
+                try:
+                    os.mkdir(DEFAULT_PROFILES_DIR)
+                except OSError:
+                    self.logger.warning(
+                        "Creation of directory %s has failed" % DEFAULT_PROFILES_DIR
+                    )
+                profile_path = os.path.join(DEFAULT_PROFILES_DIR, "profiles.yml")
+                self.profiles_dir = DEFAULT_PROFILES_DIR
+            else:
+                profile_path = os.path.join(self.profiles_dir, "profiles.yml")
 
             with open(profile_path, "w+") as yaml_file:
                 yaml.dump(profile, yaml_file, default_flow_style=False)
@@ -151,4 +176,6 @@ class DbtShellTask(ShellTask):
         if self.set_profiles_envar:
             os.environ["DBT_PROFILES_DIR"] = self.profiles_dir
 
-        return super(DbtShellTask, self).run(command=command, env=env,)
+        return super(DbtShellTask, self).run(
+            command=command, env=env, helper_script=helper_script
+        )

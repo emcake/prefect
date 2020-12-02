@@ -125,7 +125,7 @@ def flows(name, version, project, limit, all_versions):
 
     click.echo(
         tabulate(
-            output, headers=headers, tablefmt="plain", numalign="left", stralign="left",
+            output, headers=headers, tablefmt="plain", numalign="left", stralign="left"
         )
     )
 
@@ -247,7 +247,6 @@ def flow_runs(limit, flow, project, started):
                 "created": True,
                 "state": True,
                 "name": True,
-                "duration": True,
                 "start_time": True,
             }
         }
@@ -271,7 +270,6 @@ def flow_runs(limit, flow, project, started):
                 item.state,
                 pendulum.parse(item.created).diff_for_humans(),
                 start_time,
-                item.duration,
                 item.id,
             ]
         )
@@ -285,7 +283,6 @@ def flow_runs(limit, flow, project, started):
                 "STATE",
                 "AGE",
                 "START TIME",
-                "DURATION",
                 "ID",
             ],
             tablefmt="plain",

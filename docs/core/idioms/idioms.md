@@ -11,3 +11,5 @@
 - [Using Result targets for efficient caching](targets.html)
 - [Configuring notifications](notifications.html)
 - [Using file based flow storage](file-based.html)
+- [Pause for Approval](pause-for-approval.html)
+- [Naming task runs based on inputs](task-run-names.html)

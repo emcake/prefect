@@ -15,6 +15,7 @@ from prefect.serialization.storage import (
     LocalSchema,
     S3Schema,
     WebhookSchema,
+    GitLabSchema,
 )
 
 
@@ -64,7 +65,7 @@ def test_docker_full_serialize():
 
 def test_docker_serialize_with_flows():
     docker = storage.Docker(
-        registry_url="url", image_name="name", image_tag="tag", secrets=["FOO"],
+        registry_url="url", image_name="name", image_tag="tag", secrets=["FOO"]
     )
     f = prefect.Flow("test")
     docker.add_flow(f)
@@ -137,7 +138,7 @@ def test_s3_full_serialize():
 
 
 def test_s3_serialize_with_flows():
-    s3 = storage.S3(bucket="bucket", key="key", secrets=["hidden", "auth"],)
+    s3 = storage.S3(bucket="bucket", key="key", secrets=["hidden", "auth"])
     f = prefect.Flow("test")
     s3.flows["test"] = "key"
     serialized = S3Schema().dump(s3)
@@ -353,3 +354,32 @@ def test_webhook_full_serialize():
     }
     assert serialized["get_flow_request_http_method"] == "POST"
     assert serialized["stored_as_script"] is False
+
+
+def test_gitlab_empty_serialize():
+    gitlab = storage.GitLab(repo="test/repo")
+    serialized = GitLabSchema().dump(gitlab)
+    assert serialized["__version__"] == prefect.__version__
+    assert serialized["repo"] == "test/repo"
+    assert not serialized["host"]
+    assert not serialized["path"]
+    assert not serialized["ref"]
+    assert serialized["secrets"] == []
+
+
+def test_gitlab_full_serialize():
+    gitlab = storage.GitLab(
+        repo="test/repo",
+        path="path/to/flow.py",
+        host="http://localhost:1234",
+        ref="test-branch",
+        secrets=["token"],
+    )
+
+    serialized = GitLabSchema().dump(gitlab)
+    assert serialized["__version__"] == prefect.__version__
+    assert serialized["repo"] == "test/repo"
+    assert serialized["host"] == "http://localhost:1234"
+    assert serialized["path"] == "path/to/flow.py"
+    assert serialized["ref"] == "test-branch"
+    assert serialized["secrets"] == ["token"]

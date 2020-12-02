@@ -51,7 +51,7 @@ class CloudTaskRunner(TaskRunner):
     ) -> None:
         self.client = Client()
         super().__init__(
-            task=task, state_handlers=state_handlers, flow_result=flow_result,
+            task=task, state_handlers=state_handlers, flow_result=flow_result
         )
 
     def _heartbeat(self) -> bool:
@@ -97,6 +97,18 @@ class CloudTaskRunner(TaskRunner):
             new_state = super().call_runner_target_handlers(
                 old_state=old_state, new_state=new_state
             )
+
+        # PrefectStateSignals are trapped and turned into States
+        except prefect.engine.signals.PrefectStateSignal as exc:
+            self.logger.info(
+                "{name} signal raised: {rep}".format(
+                    name=type(exc).__name__, rep=repr(exc)
+                )
+            )
+            if raise_on_exception:
+                raise exc
+            new_state = exc.state
+
         except Exception as exc:
             msg = "Exception raised while calling state handlers: {}".format(repr(exc))
             self.logger.exception(msg)
@@ -115,7 +127,7 @@ class CloudTaskRunner(TaskRunner):
                 state=cloud_state,
                 cache_for=self.task.cache_for,
             )
-        except VersionLockError:
+        except VersionLockError as exc:
             state = self.client.get_task_run_state(task_run_id=task_run_id)
 
             if state.is_running():
@@ -124,7 +136,7 @@ class CloudTaskRunner(TaskRunner):
                         self.task.name
                     )
                 )
-                raise ENDRUN(state=state)
+                raise ENDRUN(state=state) from exc
 
             self.logger.debug(
                 "Version lock encountered for task {}, proceeding with state {}...".format(
@@ -134,19 +146,19 @@ class CloudTaskRunner(TaskRunner):
 
             try:
                 new_state = state.load_result(self.result)
-            except Exception as exc:
+            except Exception as exc_inner:
                 self.logger.debug(
                     "Error encountered attempting to load result for state of {} task...".format(
                         self.task.name
                     )
                 )
-                self.logger.error(repr(exc))
-                raise ENDRUN(state=state)
+                self.logger.error(repr(exc_inner))
+                raise ENDRUN(state=state) from exc_inner
         except Exception as exc:
             self.logger.exception(
                 "Failed to set task state with error: {}".format(repr(exc))
             )
-            raise ENDRUN(state=ClientFailed(state=new_state))
+            raise ENDRUN(state=ClientFailed(state=new_state)) from exc
 
         if state.is_queued():
             state.state = old_state  # type: ignore
@@ -196,7 +208,7 @@ class CloudTaskRunner(TaskRunner):
                         message="Could not retrieve state from Prefect Cloud",
                         result=exc,
                     )
-                raise ENDRUN(state=state)
+                raise ENDRUN(state=state) from exc
 
         # we assign this so it can be shared with heartbeat thread
         self.task_run_id = context.get("task_run_id", "")  # type: str
@@ -254,7 +266,16 @@ class CloudTaskRunner(TaskRunner):
                         sanitized_inputs,
                         prefect.context.get("parameters"),
                     ):
-                        return candidate_state.load_result(self.result)
+                        try:
+                            return candidate_state.load_result(self.result)
+                        except Exception:
+                            location = getattr(
+                                candidate_state._result, "location", None
+                            )
+                            self.logger.warning(
+                                f"Failed to load cached state data from {location}.",
+                                exc_info=True,
+                            )
 
                 self.logger.debug(
                     "Task '{name}': can't use cache because no candidate Cached states "
@@ -308,7 +329,34 @@ class CloudTaskRunner(TaskRunner):
                 message=f"Failed to retrieve task results: {exc}", result=exc
             )
             final_state = self.handle_state_change(old_state=state, new_state=new_state)
-            raise ENDRUN(final_state)
+            raise ENDRUN(final_state) from exc
+
+    def set_task_run_name(self, task_inputs: Dict[str, Result]) -> None:
+        """
+        Sets the name for this task run by calling the `set_task_run_name` mutation.
+
+        Args:
+            - task_inputs (Dict[str, Result]): a dictionary of inputs whose keys correspond
+                to the task's `run()` arguments.
+        """
+        task_run_name = self.task.task_run_name
+
+        if task_run_name:
+            raw_inputs = {k: r.value for k, r in task_inputs.items()}
+            formatting_kwargs = {
+                **prefect.context.get("parameters", {}),
+                **prefect.context,
+                **raw_inputs,
+            }
+
+            if not isinstance(task_run_name, str):
+                task_run_name = task_run_name(**formatting_kwargs)
+            else:
+                task_run_name = task_run_name.format(**formatting_kwargs)
+
+            self.client.set_task_run_name(
+                task_run_id=self.task_run_id, name=task_run_name  # type: ignore
+            )
 
     @tail_recursive
     def run(
@@ -337,7 +385,8 @@ class CloudTaskRunner(TaskRunner):
         Returns:
             - `State` object representing the final post-run state of the Task
         """
-        with prefect.context(context or {}):
+        context = context or {}
+        with prefect.context(context):
             end_state = super().run(
                 state=state,
                 upstream_states=upstream_states,

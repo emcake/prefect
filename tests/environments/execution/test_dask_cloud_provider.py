@@ -10,7 +10,7 @@ from distributed.deploy import Cluster
 
 from prefect.environments.execution import DaskCloudProviderEnvironment
 
-from dask_cloudprovider import FargateCluster
+from dask_cloudprovider.aws import FargateCluster
 
 
 def test_create_environment():
@@ -93,7 +93,9 @@ def test_roundtrip_cloudpickle():
             file.write("job")
 
         environment = DaskCloudProviderEnvironment(
-            provider_class=FargateCluster, cluster="test", skip_cleanup=False,
+            provider_class=FargateCluster,
+            cluster="test",
+            skip_cleanup=False,
         )
 
         assert environment._provider_kwargs == {

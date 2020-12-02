@@ -127,14 +127,14 @@ class CloudFlowRunner(FlowRunner):
                 version=version if cloud_state.is_running() else None,
                 state=cloud_state,
             )
-        except VersionLockError:
+        except VersionLockError as exc:
             state = self.client.get_flow_run_state(flow_run_id=flow_run_id)
 
             if state.is_running():
                 self.logger.debug(
                     "Version lock encountered and flow is already in a running state."
                 )
-                raise ENDRUN(state=state)
+                raise ENDRUN(state=state) from exc
 
             self.logger.debug(
                 "Version lock encountered, proceeding with state {}...".format(
@@ -146,7 +146,7 @@ class CloudFlowRunner(FlowRunner):
             self.logger.exception(
                 "Failed to set flow state with error: {}".format(repr(exc))
             )
-            raise ENDRUN(state=new_state)
+            raise ENDRUN(state=new_state) from exc
 
         if state.is_queued():
             state.state = old_state  # type: ignore
@@ -182,9 +182,9 @@ class CloudFlowRunner(FlowRunner):
                             "Error getting flow run info", exc_info=True
                         )
                         continue
-                    else:
-                        self.logger.debug(
-                            "Successfully queried server for flow run state: %r",
+                    if not flow_run_info.state.is_running():
+                        self.logger.warning(
+                            "Flow run is no longer in a running state; the current state is: %r",
                             flow_run_info.state,
                         )
                     if isinstance(flow_run_info.state, Cancelling):
@@ -197,22 +197,18 @@ class CloudFlowRunner(FlowRunner):
                         flow_run_version = flow_run_info.version
                         # If not already leaving context, raise KeyboardInterrupt in the main thread
                         if not exiting_context:
-                            if hasattr(signal, "raise_signal"):
-                                # New in python 3.8
-                                signal.raise_signal(signal.SIGINT)  # type: ignore
-                            else:
-                                if os.name == "nt":
-                                    # This doesn't actually send a signal, so it will only
-                                    # interrupt the next Python bytecode instruction - if the
-                                    # main thread is blocked in a c extension the interrupt
-                                    # won't be seen until that returns.
-                                    from _thread import interrupt_main
+                            if os.name == "nt":
+                                # This doesn't actually send a signal, so it will only
+                                # interrupt the next Python bytecode instruction - if the
+                                # main thread is blocked in a c extension the interrupt
+                                # won't be seen until that returns.
+                                from _thread import interrupt_main
 
-                                    interrupt_main()
-                                else:
-                                    signal.pthread_kill(
-                                        threading.main_thread().ident, signal.SIGINT  # type: ignore
-                                    )
+                                interrupt_main()
+                            else:
+                                signal.pthread_kill(
+                                    threading.main_thread().ident, signal.SIGINT  # type: ignore
+                                )
                         break
                     elif exiting_context:
                         break
@@ -269,7 +265,8 @@ class CloudFlowRunner(FlowRunner):
         Returns:
             - State: `State` representing the final post-run state of the `Flow`.
         """
-        context = context or {}
+        context = (context or {}).copy()
+        context.update(running_with_backend=True)
 
         end_state = super().run(
             state=state,
@@ -370,7 +367,7 @@ class CloudFlowRunner(FlowRunner):
                 state = Failed(
                     message="Could not retrieve state from Prefect Cloud", result=exc
                 )
-            raise ENDRUN(state=state)
+            raise ENDRUN(state=state) from exc
 
         updated_context = context or {}
         updated_context.update(flow_run_info.context or {})
@@ -387,13 +384,13 @@ class CloudFlowRunner(FlowRunner):
         for task_run in flow_run_info.task_runs:
             try:
                 task = tasks[task_run.task_slug]
-            except KeyError:
+            except KeyError as exc:
                 msg = (
                     f"Task slug {task_run.task_slug} not found in the current Flow; "
                     f"this is usually caused by changing the Flow without reregistering "
                     f"it with the Prefect API."
                 )
-                raise KeyError(msg)
+                raise KeyError(msg) from exc
             task_states.setdefault(task, task_run.state)
             task_contexts.setdefault(task, {}).update(
                 task_id=task_run.task_id,

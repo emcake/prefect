@@ -13,7 +13,7 @@ from prefect.core import Edge, Task
 from prefect.engine.cache_validators import all_inputs, duration_only
 from prefect.engine.cloud import CloudTaskRunner
 from prefect.engine.result import NoResult, Result, SafeResult, NoResult
-from prefect.engine.results import PrefectResult, SecretResult
+from prefect.engine.results import PrefectResult, SecretResult, LocalResult
 
 from prefect.engine.result_handlers import JSONResultHandler, ResultHandler
 from prefect.engine.runner import ENDRUN
@@ -64,6 +64,7 @@ def client(monkeypatch):
         get_latest_task_run_states=MagicMock(
             side_effect=lambda flow_run_id, states: states
         ),
+        set_task_run_name=MagicMock(),
     )
     monkeypatch.setattr(
         "prefect.engine.cloud.task_runner.Client", MagicMock(return_value=cloud_client)
@@ -168,7 +169,7 @@ def test_task_runner_sets_mapped_state_prior_to_executor_mapping(client):
 
     with pytest.raises(ENDRUN) as exc:
         CloudTaskRunner(task=Task()).check_task_ready_to_map(
-            state=Pending(), upstream_states=upstream_states,
+            state=Pending(), upstream_states=upstream_states
         )
 
     ## assertions
@@ -253,6 +254,32 @@ def test_task_runner_validates_cached_states_if_task_has_caching(client):
     assert res.result == 42
 
 
+def test_task_runner_treats_unfound_files_as_invalid_caches(client, tmpdir):
+    @prefect.task(
+        cache_for=datetime.timedelta(minutes=1), result_handler=JSONResultHandler()
+    )
+    def cached_task():
+        return 42
+
+    state = Cached(
+        cached_result_expiration=datetime.datetime.utcnow()
+        + datetime.timedelta(minutes=2),
+        result=LocalResult(location=str(tmpdir / "made_up_data.prefect")),
+    )
+    old_state = Cached(
+        cached_result_expiration=datetime.datetime.utcnow()
+        + datetime.timedelta(days=1),
+        result=Result(13, JSONResultHandler()),
+    )
+    client.get_latest_cached_states = MagicMock(return_value=[state, old_state])
+
+    res = CloudTaskRunner(task=cached_task).run()
+    assert client.get_latest_cached_states.called
+    assert res.is_successful()
+    assert res.is_cached()
+    assert res.result == 13
+
+
 class TestCheckTaskCached:
     def test_reads_result_if_cached_valid(self, client):
         result = PrefectResult(location="2")
@@ -261,7 +288,7 @@ class TestCheckTaskCached:
             task = Task(cache_validator=duration_only, result=PrefectResult())
 
         state = Cached(
-            result=result, cached_result_expiration=pendulum.now("utc").add(minutes=1),
+            result=result, cached_result_expiration=pendulum.now("utc").add(minutes=1)
         )
 
         client.get_latest_cached_states = MagicMock(return_value=[])
@@ -282,7 +309,7 @@ class TestCheckTaskCached:
             task = Task(cache_validator=duration_only, result=MyResult())
         result = PrefectResult(location="2")
         state = Cached(
-            result=result, cached_result_expiration=pendulum.now("utc").add(minutes=1),
+            result=result, cached_result_expiration=pendulum.now("utc").add(minutes=1)
         )
 
         client.get_latest_cached_states = MagicMock(return_value=[])
@@ -603,6 +630,32 @@ class TestStateResultHandling:
         assert states[1]._result.location == "2"
 
 
+def test_task_handlers_handle_retry_signals(client):
+    def state_handler(t, o, n):
+        if n.is_failed():
+            raise prefect.engine.signals.RETRY(
+                "Will retry.", start_time=pendulum.now("utc").add(days=1)
+            )
+
+    @prefect.task(state_handlers=[state_handler])
+    def fn():
+        1 / 0
+
+    state = CloudTaskRunner(task=fn).run()
+
+    assert state.is_retrying()
+    assert state.run_count == 1
+
+    # to make it run
+    state.start_time = pendulum.now("utc")
+    new_state = CloudTaskRunner(task=fn).run(state=state)
+    assert new_state.is_retrying()
+    assert new_state.run_count == 2
+
+    states = [call[1]["state"] for call in client.set_task_run_state.call_args_list]
+    assert [type(s).__name__ for s in states] == ["Running", "Retrying"] * 2
+
+
 def test_state_handler_failures_are_handled_appropriately(client, caplog):
     def bad(*args, **kwargs):
         raise SyntaxError("Syntax Errors are nice because they're so unique")
@@ -643,7 +696,7 @@ def test_task_runner_performs_retries_for_short_delays(client):
 
     client.get_task_run_info.side_effect = [MagicMock(version=i) for i in range(4, 7)]
     res = CloudTaskRunner(task=noop).run(
-        context={"task_run_version": 1}, state=None, upstream_states={},
+        context={"task_run_version": 1}, state=None, upstream_states={}
     )
 
     ## assertions
@@ -668,7 +721,7 @@ def test_task_runner_handles_looping(client):
         return prefect.context.get("task_loop_result")
 
     res = CloudTaskRunner(task=looper).run(
-        context={"task_run_version": 1}, state=None, upstream_states={},
+        context={"task_run_version": 1}, state=None, upstream_states={}
     )
 
     ## assertions
@@ -693,7 +746,7 @@ def test_task_runner_handles_looping_with_no_result(client):
         return 42
 
     res = CloudTaskRunner(task=looper).run(
-        context={"task_run_version": 1}, state=None, upstream_states={},
+        context={"task_run_version": 1}, state=None, upstream_states={}
     )
 
     ## assertions
@@ -729,7 +782,7 @@ def test_task_runner_handles_looping_with_retries_with_no_result(client):
 
     client.get_task_run_info.side_effect = [MagicMock(version=i) for i in range(6, 9)]
     res = CloudTaskRunner(task=looper).run(
-        context={"task_run_version": 1}, state=None, upstream_states={},
+        context={"task_run_version": 1}, state=None, upstream_states={}
     )
 
     ## assertions
@@ -765,7 +818,7 @@ def test_task_runner_handles_looping_with_retries(client):
 
     client.get_task_run_info.side_effect = [MagicMock(version=i) for i in range(6, 9)]
     res = CloudTaskRunner(task=looper).run(
-        context={"task_run_version": 1}, state=None, upstream_states={},
+        context={"task_run_version": 1}, state=None, upstream_states={}
     )
 
     ## assertions
@@ -799,7 +852,7 @@ def test_cloud_task_runner_respects_queued_states_from_cloud(client):
         pass
 
     res = CloudTaskRunner(task=tagged_task).run(
-        context={"task_run_version": 1}, state=None, upstream_states={},
+        context={"task_run_version": 1}, state=None, upstream_states={}
     )
 
     assert res.is_successful()
@@ -825,9 +878,7 @@ def test_cloud_task_runner_handles_retries_with_queued_states_from_cloud(client)
     client.set_task_run_state = queued_mock
 
     @prefect.task(
-        max_retries=2,
-        retry_delay=datetime.timedelta(seconds=0),
-        result=PrefectResult(),
+        max_retries=2, retry_delay=datetime.timedelta(seconds=0), result=PrefectResult()
     )
     def tagged_task(x):
         if prefect.context.get("task_run_count", 1) == 1:
@@ -877,9 +928,7 @@ def test_cloud_task_runner_sends_heartbeat_on_queued_retries(client):
     client.update_task_run_heartbeat = mock_heartbeat
 
     @prefect.task(
-        max_retries=2,
-        retry_delay=datetime.timedelta(seconds=0),
-        result=PrefectResult(),
+        max_retries=2, retry_delay=datetime.timedelta(seconds=0), result=PrefectResult()
     )
     def tagged_task(x):
         if prefect.context.get("task_run_count", 1) == 1:
@@ -923,7 +972,7 @@ class TestLoadResults:
         state = Success(result=PrefectResult(location="1"))
         edge = Edge(Task(result=CustomResult()), 2, key="x")
         new_state, upstreams = CloudTaskRunner(task=Task()).load_results(
-            state=Pending(), upstream_states={edge: state},
+            state=Pending(), upstream_states={edge: state}
         )
         assert upstreams[edge].result == ["foo", "bar", "baz"]
 
@@ -935,7 +984,7 @@ class TestLoadResults:
         with prefect.context(secrets=dict(foo=42)):
             edge = Edge(Task(result=secret_result), 2, key="x")
             new_state, upstreams = CloudTaskRunner(task=Task()).load_results(
-                state=Pending(), upstream_states={edge: state},
+                state=Pending(), upstream_states={edge: state}
             )
 
         assert upstreams[edge].result == 42
@@ -1028,3 +1077,57 @@ def test_task_runner_handles_version_lock_error(monkeypatch):
     client.get_task_run_state.return_value = s
     with pytest.raises(ENDRUN):
         res = runner.call_runner_target_handlers(Pending(), Running())
+
+
+def test_task_runner_sets_task_name(monkeypatch, cloud_settings):
+    client = MagicMock()
+    monkeypatch.setattr(
+        "prefect.engine.cloud.task_runner.Client", MagicMock(return_value=client)
+    )
+    client.set_task_run_name = MagicMock()
+
+    task = Task(name="test", task_run_name="asdf")
+    runner = CloudTaskRunner(task=task)
+    runner.task_run_id = "id"
+
+    runner.set_task_run_name(task_inputs={})
+
+    assert client.set_task_run_name.called
+    assert client.set_task_run_name.call_args[1]["name"] == "asdf"
+    assert client.set_task_run_name.call_args[1]["task_run_id"] == "id"
+
+    task = Task(name="test", task_run_name="{map_index}")
+    runner = CloudTaskRunner(task=task)
+    runner.task_run_id = "id"
+
+    class Temp:
+        value = 100
+
+    runner.set_task_run_name(task_inputs={"map_index": Temp()})
+
+    assert client.set_task_run_name.called
+    assert client.set_task_run_name.call_args[1]["name"] == "100"
+    assert client.set_task_run_name.call_args[1]["task_run_id"] == "id"
+
+    task = Task(name="test", task_run_name=lambda **kwargs: "name")
+    runner = CloudTaskRunner(task=task)
+    runner.task_run_id = "id"
+
+    runner.set_task_run_name(task_inputs={})
+
+    assert client.set_task_run_name.called
+    assert client.set_task_run_name.call_args[1]["name"] == "name"
+    assert client.set_task_run_name.call_args[1]["task_run_id"] == "id"
+
+
+def test_task_runner_set_task_name_same_as_prefect_context(client):
+    @prefect.task(name="hey", task_run_name=lambda **kwargs: kwargs["config"])
+    def test_task(config):
+        return
+
+    edge = Edge(Task(), Task(), key="config")
+    state = Success(result="any_value")
+    res = CloudTaskRunner(task=test_task).run(upstream_states={edge: state})
+
+    assert client.set_task_run_name.call_count == 1
+    assert client.set_task_run_name.call_args[1]["name"] == "any_value"

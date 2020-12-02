@@ -236,7 +236,10 @@ def IntervalSchedule(
 
 
 def CronSchedule(
-    cron: str, start_date: datetime = None, end_date: datetime = None
+    cron: str,
+    start_date: datetime = None,
+    end_date: datetime = None,
+    day_or: bool = None,
 ) -> Schedule:
     """
     Cron clock.
@@ -255,6 +258,11 @@ def CronSchedule(
         - cron (str): a valid cron string
         - start_date (datetime, optional): an optional start date for the clock
         - end_date (datetime, optional): an optional end date for the clock
+        - day_or (bool, optional): Control how croniter handles `day` and `day_of_week` entries.
+            Defaults to True, matching cron which connects those values using OR.
+            If the switch is set to False, the values are connected using AND. This behaves like
+            fcron and enables you to e.g. define a job that executes each 2nd friday of a month
+            by setting the days of month and the weekday.
 
     Raises:
         - ValueError: if the cron string is invalid
@@ -262,7 +270,7 @@ def CronSchedule(
     return Schedule(
         clocks=[
             prefect.schedules.clocks.CronClock(
-                cron=cron, start_date=start_date, end_date=end_date
+                cron=cron, start_date=start_date, end_date=end_date, day_or=day_or
             )
         ]
     )
@@ -278,6 +286,7 @@ def OneTimeSchedule(start_date: datetime) -> Schedule:
         "The OneTimeSchedule is deprecated and will be removed from "
         "Prefect. Use a Schedule with a single-date DatesClock instead.",
         UserWarning,
+        stacklevel=2,
     )
     return Schedule(clocks=[prefect.schedules.clocks.DatesClock(dates=[start_date])])
 
@@ -292,5 +301,6 @@ def UnionSchedule(schedules: List[Schedule]) -> Schedule:
         "The UnionSchedule is deprecated and will be removed from "
         "Prefect. Use a Schedule with multiple clocks instead.",
         UserWarning,
+        stacklevel=2,
     )
     return Schedule(clocks=[c for s in schedules for c in s.clocks])

@@ -171,7 +171,7 @@ class FlowRunner(Runner):
 
         for task in self.flow.tasks:
             task_contexts.setdefault(task, {}).update(
-                task_name=task.name, task_slug=self.flow.slugs[task],
+                task_name=task.name, task_slug=self.flow.slugs[task]
             )
 
         state, context = super().initialize_run(state=state, context=context)
@@ -229,7 +229,12 @@ class FlowRunner(Runner):
         task_contexts = dict(task_contexts or {})
         parameters = dict(parameters or {})
         if executor is None:
-            executor = prefect.engine.get_default_executor_class()()
+            # Use the executor on the flow, if configured
+            executor = getattr(self.flow, "executor", None)
+            if executor is None:
+                executor = prefect.engine.get_default_executor_class()()
+
+        self.logger.debug("Using executor type %s", type(executor).__name__)
 
         try:
             state, task_states, context, task_contexts = self.initialize_run(
@@ -422,6 +427,24 @@ class FlowRunner(Runner):
                 ):
                     task_states[task] = task_state = Success(result=task.value)
 
+                # Always restart completed resource setup/cleanup tasks unless
+                # they were explicitly cached.
+                # TODO: we only need to rerun these tasks if any pending
+                # downstream tasks depend on them.
+                if (
+                    isinstance(
+                        task,
+                        (
+                            prefect.tasks.core.resource_manager.ResourceSetupTask,
+                            prefect.tasks.core.resource_manager.ResourceCleanupTask,
+                        ),
+                    )
+                    and task_state is not None
+                    and task_state.is_finished()
+                    and not task_state.is_cached()
+                ):
+                    task_states[task] = task_state = Pending()
+
                 # if the state is finished, don't run the task, just use the provided state if
                 # the state is cached / mapped, we still want to run the task runner pipeline
                 # steps to either ensure the cache is still valid / or to recreate the mapped
@@ -469,7 +492,7 @@ class FlowRunner(Runner):
                         # to complete and then flatten them
                         if edge.flattened:
                             children = executors.flatten_mapped_children(
-                                mapped_children=children, executor=executor,
+                                mapped_children=children, executor=executor
                             )
 
                         upstream_mapped_states[edge] = children
@@ -487,7 +510,7 @@ class FlowRunner(Runner):
                     )
 
                 # handle mapped tasks
-                if any([edge.mapped for edge in upstream_states.keys()]):
+                if any(edge.mapped for edge in upstream_states.keys()):
 
                     # wait on upstream states to determine the width of the pipeline
                     # this is the key to depth-first execution
@@ -517,11 +540,13 @@ class FlowRunner(Runner):
 
                     # either way, we should now have enough resolved states to restructure
                     # the upstream states into a list of upstream state dictionaries to iterate over
-                    list_of_upstream_states = executors.prepare_upstream_states_for_mapping(
-                        task_states[task],
-                        upstream_states,
-                        mapped_children,
-                        executor=executor,
+                    list_of_upstream_states = (
+                        executors.prepare_upstream_states_for_mapping(
+                            task_states[task],
+                            upstream_states,
+                            mapped_children,
+                            executor=executor,
+                        )
                     )
 
                     submitted_states = []

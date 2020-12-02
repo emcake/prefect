@@ -7,7 +7,10 @@ import random
 import sys
 import tempfile
 import time
+import subprocess
+import textwrap
 from unittest.mock import MagicMock, patch
+from random import shuffle
 
 import cloudpickle
 import pendulum
@@ -19,9 +22,10 @@ from prefect import task
 from prefect.core.edge import Edge
 from prefect.core.flow import Flow
 from prefect.core.task import Task
+from prefect.tasks.core import constants
 from prefect.core.parameter import Parameter
 from prefect.engine.cache_validators import all_inputs, partial_inputs_only
-from prefect.engine.executors import LocalExecutor
+from prefect.engine.executors import LocalExecutor, DaskExecutor
 from prefect.engine.result import Result
 from prefect.engine.results import LocalResult, PrefectResult
 from prefect.engine.result_handlers import LocalResultHandler, ResultHandler
@@ -40,6 +44,8 @@ from prefect.engine.state import (
     TriggerFailed,
     TimedOut,
 )
+from prefect.environments.execution import LocalEnvironment
+from prefect.run_configs import LocalRun
 from prefect.schedules.clocks import ClockEvent
 from prefect.tasks.core.function import FunctionTask
 from prefect.utilities.configuration import set_temporary_config
@@ -150,7 +156,7 @@ class TestCreateFlow:
     def test_create_flow_with_storage_and_result(self):
         result = LocalResult(dir="/")
         f2 = Flow(
-            name="test", storage=prefect.environments.storage.Local(), result=result,
+            name="test", storage=prefect.environments.storage.Local(), result=result
         )
         assert isinstance(f2.storage, prefect.environments.storage.Local)
         assert isinstance(f2.result, LocalResult)
@@ -448,6 +454,16 @@ def test_add_edge_returns_edge():
     assert edge in f.edges
 
 
+def test_add_edge_from_contant():
+    f = Flow(name="test")
+    value = 1
+    c1 = constants.Constant(value)
+    t1 = Task()
+    f.add_edge(upstream_task=c1, downstream_task=t1, key="foo")
+    assert t1 in f.get_tasks()
+    assert f.constants[t1]["foo"] == value
+
+
 def test_chain():
     f = Flow(name="test")
     t1 = Task()
@@ -573,6 +589,24 @@ def test_eager_cycle_detection_works():
             f.add_edge(t2, t1)
 
     assert not prefect.config.flows.eager_edge_validation
+
+
+def test_copy_handles_constants():
+    @task
+    def f(x):
+        return x
+
+    with Flow("foo") as original_flow:
+        x = Parameter(name="x")
+        y = f(x)
+
+    assert not original_flow.constants
+
+    copied_flow = original_flow.copy()
+    copied_flow.replace(x, 1)
+
+    assert copied_flow.constants
+    assert not original_flow.constants
 
 
 def test_copy():
@@ -1203,7 +1237,16 @@ def test_skip_validation_in_init_with_kwarg():
     assert Flow(name="test", edges=[e1, e2], validate=False)
 
 
-@pytest.mark.xfail(raises=ImportError, reason="viz extras not installed.")
+try:
+    import graphviz
+
+    graphviz.pipe("dot", "png", b"graph {a -- b}", quiet=True)
+    no_graphviz = False
+except Exception:
+    no_graphviz = True
+
+
+@pytest.mark.skipif(no_graphviz, reason="viz extras not installed.")
 class TestFlowVisualize:
     def test_visualize_raises_informative_importerror_without_python_graphviz(
         self, monkeypatch
@@ -1213,6 +1256,7 @@ class TestFlowVisualize:
 
         with monkeypatch.context() as m:
             m.setattr(sys, "path", "")
+            m.delitem(sys.modules, "graphviz", raising=False)
             with pytest.raises(ImportError, match=r"pip install 'prefect\[viz\]'"):
                 f.visualize()
 
@@ -1608,6 +1652,16 @@ class TestReplace:
         with pytest.raises(ValueError):
             f.edges_to(t1)
 
+    def test_replace_leaves_unset_reference_tasks_alone(self):
+        with Flow(name="test") as f:
+            t1 = Task(name="t1")()
+            t2 = Task(name="t2")(upstream_tasks=[t1])
+        t3 = Task(name="t3")
+        f.replace(t1, t3)
+        t4 = Task(name="t4")
+        f.add_task(t4)
+        assert f.reference_tasks() == {t2, t4}
+
     def test_replace_update_slugs(self):
         flow = Flow("test")
         p1, p2 = Parameter("p"), Parameter("p")
@@ -1711,7 +1765,11 @@ class TestGetTasks:
 
 class TestSerialize:
     def test_serialization(self):
-        p1, t2, t3, = Parameter("1"), Task("2"), Task("3")
+        (
+            p1,
+            t2,
+            t3,
+        ) = (Parameter("1"), Task("2"), Task("3"))
 
         f = Flow(name="test", tasks=[p1, t2, t3])
         f.add_edge(p1, t2)
@@ -1722,7 +1780,11 @@ class TestSerialize:
         assert len(serialized["tasks"]) == len(f.tasks)
 
     def test_deserialization(self):
-        p1, t2, t3, = Parameter("1"), Task("2"), Task("3")
+        (
+            p1,
+            t2,
+            t3,
+        ) = (Parameter("1"), Task("2"), Task("3"))
 
         f = Flow(
             name="hi",
@@ -1785,6 +1847,121 @@ class TestSerialize:
         f = Flow(name="test")
         with pytest.raises(ValueError):
             s_build = f.serialize(build=True)
+
+
+class TestSerializedHash:
+    def test_is_same_with_same_flow(self):
+        f = Flow("test")
+        assert f.serialized_hash() == f.serialized_hash()
+
+    def test_is_same_with_copied_flow(self):
+        f = Flow("test")
+        assert f.serialized_hash() == f.copy().serialized_hash()
+
+    def test_is_consistent_after_storage_build(self):
+        f = Flow("foo", storage=prefect.environments.storage.Local())
+        key = f.serialized_hash(build=True)
+        assert key == f.serialized_hash()
+        assert key == f.serialized_hash(build=True)
+        assert key == f.copy().serialized_hash()
+
+    def test_is_different_before_and_after_storage_build(self):
+        f = Flow("foo", storage=prefect.environments.storage.Local())
+        assert f.copy().serialized_hash() != f.serialized_hash(build=True)
+
+    def test_is_different_with_different_flow_name(self):
+        assert Flow("foo").serialized_hash() != Flow("bar").serialized_hash()
+
+    def test_is_same_in_new_python_instance(self, tmpdir):
+        contents = textwrap.dedent(
+            """
+        from prefect import task, Flow
+
+        @task
+        def dummy_task():
+            return "nothing interesting"
+
+        with Flow("example-flow") as flow:
+            dummy_task()
+
+        if __name__ == "__main__":
+            print(flow.serialized_hash())
+        """
+        )
+        script = tmpdir.join("flow.py")
+        script.write_text(contents, encoding="utf-8")
+
+        hashes = []
+        for _ in range(2):
+            result = subprocess.run(
+                [sys.executable, script], stdout=subprocess.PIPE, check=True
+            )
+            hashes.append(result.stdout)
+
+        assert hashes[0]  # Ensure we don't have an empty string or None
+        assert len(set(hashes)) == 1
+
+    def test_task_order_is_deterministic(self):
+        def my_fake_task(foo):
+            pass
+
+        tasks = [task(my_fake_task) for _ in range(5)]
+
+        def make_flow():
+            with Flow("example-flow") as flow:
+                shuffle(tasks)  # Shuffle for a higher likelihood of failure
+                for i, fake_task in enumerate(tasks):
+                    fake_task(tasks[(i + 1) % len(tasks)])
+            return flow
+
+        flows = [make_flow() for _ in range(10)]
+
+        hashes = {flow.serialized_hash() for flow in flows}
+        assert len(hashes) == 1
+
+    def test_parameter_order_is_deterministic(self):
+        @task
+        def my_fake_task(foo):
+            pass
+
+        params = [Parameter(str(i)) for i in range(5)]
+
+        def make_flow():
+            with Flow("example-flow") as flow:
+                for param in params:
+                    my_fake_task(param)
+            return flow
+
+        flows = [make_flow() for _ in range(10)]
+
+        hashes = {flow.serialized_hash() for flow in flows}
+        assert len(hashes) == 1
+
+    def test_is_different_with_modified_flow_name(self):
+        f1 = Flow("foo")
+        f2 = f1.copy()
+        f2.name = "bar"
+        assert f1.serialized_hash() != f2.serialized_hash()
+
+    def test_is_different_with_modified_flow_storage(self):
+        f1 = Flow("foo", storage=prefect.environments.storage.Local())
+        f2 = f1.copy()
+        f2.storage = prefect.environments.storage.Docker()
+        assert f1.serialized_hash() != f2.serialized_hash()
+
+    def test_is_different_with_different_flow_tasks(self):
+        @task()
+        def foo():
+            return 1
+
+        @task()
+        def bar():
+            return 2
+
+        assert (
+            Flow("test", tasks=[foo]).serialized_hash()
+            != Flow("test", tasks=[bar]).serialized_hash()
+        )
 
 
 @pytest.mark.usefixtures("clear_context_cache")
@@ -1879,7 +2056,7 @@ class TestFlowRunMethod:
         a = prefect.schedules.clocks.DatesClock(
             [pendulum.now("UTC").add(seconds=0.1)], parameter_defaults=dict(x=1)
         )
-        b = prefect.schedules.clocks.DatesClock([pendulum.now("UTC").add(seconds=0.35)])
+        b = prefect.schedules.clocks.DatesClock([pendulum.now("UTC").add(seconds=0.65)])
 
         x = prefect.Parameter("x", default=3, required=False)
         outputs = []
@@ -2486,7 +2663,7 @@ class TestFlowDiagnostics:
 class TestFlowRegister:
     @pytest.mark.parametrize(
         "storage",
-        ["prefect.environments.storage.Docker", "prefect.environments.storage.Local",],
+        ["prefect.environments.storage.Docker", "prefect.environments.storage.Local"],
     )
     def test_flow_register_uses_default_storage(self, monkeypatch, storage):
         monkeypatch.setattr("prefect.Client", MagicMock())
@@ -2532,6 +2709,7 @@ class TestFlowRegister:
         assert f.storage.image_tag == "BIG"
         assert f.environment.labels == set()
 
+    @pytest.mark.parametrize("kind", ["environment", "run_config"])
     @pytest.mark.parametrize(
         "storage",
         [
@@ -2541,15 +2719,19 @@ class TestFlowRegister:
             prefect.environments.storage.Azure(container="windows"),
         ],
     )
-    def test_flow_register_auto_labels_environment_if_labeled_storage_used(
-        self, monkeypatch, storage
+    def test_flow_register_auto_labels_if_labeled_storage_used(
+        self, monkeypatch, storage, kind
     ):
         monkeypatch.setattr("prefect.Client", MagicMock())
         f = Flow(name="Test me!! I should get labeled", storage=storage)
+        if kind == "run_config":
+            obj = f.run_config = LocalRun(labels=["test-label"])
+        else:
+            obj = f.environment = LocalEnvironment(labels=["test-label"])
 
         f.register("My-project", build=False)
 
-        assert len(f.environment.labels) == 1
+        assert obj.labels == {"test-label", *storage.labels}
 
     @pytest.mark.parametrize(
         "storage",
@@ -2618,8 +2800,13 @@ class TestFlowRegister:
         assert "foo" in f.environment.labels
         assert len(f.environment.labels) == 2
 
-    def test_flow_register_passes_kwargs_to_storage(self, monkeypatch):
-        monkeypatch.setattr("prefect.Client", MagicMock())
+    def test_flow_register_errors_if_in_flow_context(self):
+        with pytest.raises(ValueError) as exc:
+            with Flow("test") as flow:
+                flow.register()
+        assert "`flow.register()` from within a `Flow` context manager" in str(
+            exc.value
+        )
 
 
 def test_bad_flow_runner_code_still_returns_state_obj():
@@ -2801,6 +2988,20 @@ def test_starting_at_arbitrary_loop_index():
     assert flow_state.result[final].result == 100
 
 
+def test_flow_run_name_as_run_param():
+    @task
+    def get_flow_run_from_context():
+        return prefect.context["flow_run_name"]
+
+    with Flow(name="flow-run-name-from-context") as f:
+        flow_run_name = get_flow_run_from_context()
+
+    flow_state = f.run(flow_run_name="test-flow-run")
+
+    assert flow_state.is_successful()
+    assert flow_state.result[flow_run_name].result == "test-flow-run"
+
+
 class TestSaveLoad:
     def test_save_saves_and_load_loads(self):
         t = Task(name="foo")
@@ -2862,8 +3063,12 @@ class TestSaveLoad:
     sys.platform == "win32" or sys.version_info.minor == 6,
     reason="Windows doesn't support any timeout logic",
 )
-@pytest.mark.parametrize("executor", ["local", "sync", "mthread"], indirect=True)
-def test_timeout_actually_stops_execution(executor):
+@pytest.mark.parametrize(
+    "executor", ["local", "sync", "mthread", "mproc_local", "mproc"], indirect=True
+)
+def test_timeout_actually_stops_execution(
+    executor,
+):
     # Note: this is a potentially brittle test! In some cases (local and sync) signal.alarm
     # is used as the mechanism for timing out a task. This passes off the job of measuring
     # the time for the timeout to the OS, which uses the "wallclock" as reference (the real
@@ -2877,15 +3082,25 @@ def test_timeout_actually_stops_execution(executor):
     # the task implementation" we got, but instead do a simple task (create a file) and sleep.
     # This will drastically reduce the brittleness of the test (but not completely).
 
+    # The amount of time to sleep before writing 'invalid' to the file
+    # lower values will decrease test time but increase chances of intermittent failure
+    SLEEP_TIME = 3
+
+    # Determine if the executor is distributed and using daemonic processes which
+    # cannot be cancelled and throw a warning instead.
+    in_daemon_process = isinstance(
+        executor, DaskExecutor
+    ) and not executor.address.startswith("inproc")
+
     with tempfile.TemporaryDirectory() as call_dir:
         # Note: a real file must be used in the case of "mthread"
         FILE = os.path.join(call_dir, "test.txt")
 
-        @prefect.task(timeout=1)
+        @prefect.task(timeout=2)
         def slow_fn():
             with open(FILE, "w") as f:
                 f.write("called!")
-            time.sleep(2)
+            time.sleep(SLEEP_TIME)
             with open(FILE, "a") as f:
                 f.write("invalid")
 
@@ -2896,15 +3111,25 @@ def test_timeout_actually_stops_execution(executor):
         start_time = time.time()
         state = flow.run(executor=executor)
         stop_time = time.time()
-        time.sleep(max(0, 3 - (stop_time - start_time)))
+
+        # Sleep so 'invalid' will be written if the task is not killed, subtracting the
+        # actual runtime to speed up the test a little
+        time.sleep(max(1, SLEEP_TIME - (stop_time - start_time)))
 
         assert os.path.exists(FILE)
         with open(FILE, "r") as f:
-            assert "invalid" not in f.read()
+            # `invalid` should *only be in the file if a daemon process was used
+            assert ("invalid" in f.read()) == in_daemon_process
 
     assert state.is_failed()
     assert isinstance(state.result[slow_fn], TimedOut)
     assert isinstance(state.result[slow_fn].result, TimeoutError)
+    # We cannot capture the UserWarning because it is being run by a Dask worker
+    # but we can make sure the TimeoutError includes a note about it
+    assert (
+        "executed in a daemonic subprocess and will continue to run"
+        in str(state.result[slow_fn].result)
+    ) == in_daemon_process
 
 
 @pytest.mark.skip("Result handlers not yet deprecated")
@@ -2960,16 +3185,17 @@ def test_results_write_to_custom_formatters(tmpdir):
     }
 
 
-def test_run_agent_passes_environment_labels(monkeypatch):
+@pytest.mark.parametrize("kind", ["environment", "run_config"])
+def test_run_agent_passes_flow_labels(monkeypatch, kind):
     agent = MagicMock()
     monkeypatch.setattr("prefect.agent.local.LocalAgent", agent)
+    labels = ["test", "test", "test2"]
 
-    f = Flow(
-        "test",
-        environment=prefect.environments.LocalEnvironment(
-            labels=["test", "test", "test2"]
-        ),
-    )
+    f = Flow("test")
+    if kind == "run_config":
+        f.run_config = LocalRun(labels=labels)
+    else:
+        f.environment = LocalEnvironment(labels=labels)
     f.run_agent()
 
     assert type(agent.call_args[1]["labels"]) is list

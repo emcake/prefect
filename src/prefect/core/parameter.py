@@ -1,21 +1,23 @@
-from typing import TYPE_CHECKING, Any, Dict, Iterable
+from typing import TYPE_CHECKING, Any, Dict, Iterable, Union, Optional
+
+import pendulum
 
 import prefect
+from prefect.engine.serializers import DateTimeSerializer
 import prefect.engine.signals
 import prefect.triggers
-from prefect.core.task import Task
+from prefect.core.task import Task, NoDefault
 from prefect.engine.results import PrefectResult
 
 if TYPE_CHECKING:
     from prefect.core.flow import Flow  # pylint: disable=W0611
 
 
-# A sentinel value indicating no default was provided
-no_default = type(
-    "no_default",
-    (object,),
-    dict.fromkeys(["__repr__", "__reduce__"], lambda s: "no_default"),
-)()
+no_default = NoDefault.value
+
+JSONSerializableParameterValue = Optional[
+    Union[NoDefault, str, int, float, bool, list, dict]
+]
 
 
 class Parameter(Task):
@@ -28,7 +30,7 @@ class Parameter(Task):
 
     Args:
         - name (str): the Parameter name.
-        - default (any, optional): A default value for the parameter.
+        - default (any, optional): A default value for the parameter. Must be a JSON-Serializable type.
         - required (bool, optional): If True, the Parameter is required and the
             default value is ignored. Defaults to `False` if a `default` is
             provided, otherwise `True`.
@@ -39,7 +41,7 @@ class Parameter(Task):
     def __init__(
         self,
         name: str,
-        default: Any = no_default,
+        default: JSONSerializableParameterValue = no_default,
         required: bool = None,
         tags: Iterable[str] = None,
     ):
@@ -51,7 +53,7 @@ class Parameter(Task):
         self.default = default
 
         super().__init__(
-            name=name, slug=name, tags=tags, result=PrefectResult(), checkpoint=True,
+            name=name, slug=name, tags=tags, result=PrefectResult(), checkpoint=True
         )
 
     def __repr__(self) -> str:
@@ -112,3 +114,34 @@ class Parameter(Task):
             - dict representing this parameter
         """
         return prefect.serialization.task.ParameterSchema().dump(self)
+
+
+class DateTimeParameter(Parameter):
+    """
+    A DateTimeParameter that casts its input as a DateTime
+
+    Args:
+        - name (str): the Parameter name.
+        - required (bool, optional): If True, the Parameter is required. Otherwise, it
+            is optional and will return `None` if no value is provided.
+        - tags ([str], optional): A list of tags for this parameter
+    """
+
+    def __init__(
+        self,
+        name: str,
+        required: bool = True,
+        tags: Iterable[str] = None,
+    ) -> None:
+        default = no_default if required else None
+        super().__init__(name=name, default=default, required=required, tags=tags)
+        self.result = PrefectResult(serializer=DateTimeSerializer())
+
+    def run(self) -> Any:
+        value = super().run()
+        if value is None:
+            return value
+        elif isinstance(value, str):
+            return pendulum.parse(value)
+        else:
+            return pendulum.instance(value)

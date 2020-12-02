@@ -30,7 +30,7 @@ class GCSResultHandler(ResultHandler):
             which stores a JSON representation of your Google Cloud credentials.
     """
 
-    def __init__(self, bucket: str = None, credentials_secret: str = None,) -> None:
+    def __init__(self, bucket: str = None, credentials_secret: str = None) -> None:
         self.bucket = bucket
         self.credentials_secret = credentials_secret
         super().__init__()
@@ -98,7 +98,7 @@ class GCSResultHandler(ResultHandler):
         """
         try:
             self.logger.debug("Starting to download result from {}...".format(uri))
-            result = self.gcs_bucket.blob(uri).download_as_string()
+            result = self.gcs_bucket.blob(uri).download_as_bytes()
             try:
                 return_val = cloudpickle.loads(base64.b64decode(result))
             except EOFError:

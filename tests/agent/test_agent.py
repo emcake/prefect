@@ -25,6 +25,7 @@ def test_multiple_agent_init_doesnt_duplicate_logs(cloud_api):
 def test_agent_config_options(cloud_api):
     with set_temporary_config({"cloud.agent.auth_token": "TEST_TOKEN"}):
         agent = Agent()
+        assert agent.agent_config_id == None
         assert agent.labels == []
         assert agent.env_vars == dict()
         assert agent.max_polls is None
@@ -142,7 +143,7 @@ def test_query_flow_runs(monkeypatch, cloud_api):
         return_value=MagicMock(
             data=MagicMock(
                 get_runs_in_queue=MagicMock(flow_run_ids=["id"]),
-                flow_run=[{"id": "id"}],
+                flow_run=[GraphQLResult({"id": "id", "scheduled_start_time": 1})],
             )
         )
     )
@@ -152,7 +153,7 @@ def test_query_flow_runs(monkeypatch, cloud_api):
 
     agent = Agent()
     flow_runs = agent.query_flow_runs()
-    assert flow_runs == [{"id": "id"}]
+    assert flow_runs == [GraphQLResult({"id": "id", "scheduled_start_time": 1})]
 
 
 def test_query_flow_runs_ignores_currently_submitting_runs(monkeypatch, cloud_api):
@@ -160,7 +161,7 @@ def test_query_flow_runs_ignores_currently_submitting_runs(monkeypatch, cloud_ap
         return_value=MagicMock(
             data=MagicMock(
                 get_runs_in_queue=MagicMock(flow_run_ids=["id1", "id2"]),
-                flow_run=[{"id1": "id1"}],
+                flow_run=[GraphQLResult({"id": "id", "scheduled_start_time": 1})],
             )
         )
     )
@@ -177,6 +178,30 @@ def test_query_flow_runs_ignores_currently_submitting_runs(monkeypatch, cloud_ap
         'id: { _in: ["id1"] }'
         in list(gql_return.call_args_list[1][0][0]["query"].keys())[0]
     )
+
+
+def test_query_flow_runs_ordered_by_start_time(monkeypatch, cloud_api):
+    gql_return = MagicMock(
+        return_value=MagicMock(
+            data=MagicMock(
+                get_runs_in_queue=MagicMock(flow_run_ids=["id"]),
+                flow_run=[
+                    GraphQLResult({"id": "id2", "scheduled_start_time": 200}),
+                    GraphQLResult({"id": "id", "scheduled_start_time": 1}),
+                ],
+            )
+        )
+    )
+    client = MagicMock()
+    client.return_value.graphql = gql_return
+    monkeypatch.setattr("prefect.agent.agent.Client", client)
+
+    agent = Agent()
+    flow_runs = agent.query_flow_runs()
+    assert flow_runs == [
+        GraphQLResult({"id": "id", "scheduled_start_time": 1}),
+        GraphQLResult({"id": "id2", "scheduled_start_time": 200}),
+    ]
 
 
 def test_query_flow_runs_does_not_use_submitting_flow_runs_directly(
@@ -344,6 +369,7 @@ def test_agent_process(monkeypatch, cloud_api):
                                     }
                                 )
                             ],
+                            "scheduled_start_time": 1,
                         }
                     )
                 ],
@@ -474,7 +500,7 @@ def test_agent_start_max_polls_count(monkeypatch, runner_token, cloud_api):
 
     assert on_shutdown.call_count == 1
     assert agent_process.call_count == 2
-    assert heartbeat.call_count == 2
+    assert heartbeat.call_count == 1
 
 
 def test_agent_start_max_polls_zero(monkeypatch, runner_token, cloud_api):
@@ -495,7 +521,7 @@ def test_agent_start_max_polls_zero(monkeypatch, runner_token, cloud_api):
 
     assert on_shutdown.call_count == 1
     assert agent_process.call_count == 0
-    assert heartbeat.call_count == 0
+    assert heartbeat.call_count == 1
 
 
 def test_agent_registration_and_id(monkeypatch, cloud_api):
@@ -508,6 +534,21 @@ def test_agent_registration_and_id(monkeypatch, cloud_api):
     agent.start()
     assert agent._register_agent() == "ID"
     assert agent.client._attached_headers == {"X-PREFECT-AGENT-ID": "ID"}
+
+
+def test_agent_rerieve_config(monkeypatch, cloud_api):
+    monkeypatch.setattr("prefect.agent.agent.Agent._verify_token", MagicMock())
+    monkeypatch.setattr(
+        "prefect.agent.agent.Client.register_agent", MagicMock(return_value="ID")
+    )
+    monkeypatch.setattr(
+        "prefect.agent.agent.Client.get_agent_config",
+        MagicMock(return_value={"settings": "yes"}),
+    )
+
+    agent = Agent(max_polls=1)
+    agent.start()
+    assert agent._retrieve_agent_config() == {"settings": "yes"}
 
 
 def test_agent_health_check(cloud_api):
@@ -596,3 +637,19 @@ def test_agent_poke_api(monkeypatch, runner_token, cloud_api):
     assert heartbeat.call_count == 1
     assert agent_process.call_count == 1
     assert agent_connect.call_count == 1
+
+
+def test_catch_errors_in_heartbeat_thread(monkeypatch, runner_token, cloud_api, caplog):
+    """Check that errors in the heartbeat thread are caught, logged, and the thread keeps going"""
+    monkeypatch.setattr("prefect.agent.agent.Agent.agent_process", MagicMock())
+    monkeypatch.setattr(
+        "prefect.agent.agent.Agent.agent_connect", MagicMock(return_value="id")
+    )
+    heartbeat = MagicMock(side_effect=ValueError)
+    monkeypatch.setattr("prefect.agent.agent.Agent.heartbeat", heartbeat)
+    agent = Agent(max_polls=2)
+    agent.heartbeat_period = 0.1
+    agent.start()
+
+    assert heartbeat.call_count > 1
+    assert any("Error in agent heartbeat" in m for m in caplog.messages)

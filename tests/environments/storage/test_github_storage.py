@@ -15,16 +15,19 @@ def test_create_github_storage():
 
 
 def test_create_github_storage_init_args():
-    storage = GitHub(repo="test/repo", path="flow.py", secrets=["auth"],)
+    storage = GitHub(
+        repo="test/repo", path="flow.py", ref="my_branch", secrets=["auth"]
+    )
     assert storage
     assert storage.flows == dict()
     assert storage.repo == "test/repo"
     assert storage.path == "flow.py"
+    assert storage.ref == "my_branch"
     assert storage.secrets == ["auth"]
 
 
 def test_serialize_github_storage():
-    storage = GitHub(repo="test/repo", path="flow.py", secrets=["auth"],)
+    storage = GitHub(repo="test/repo", path="flow.py", secrets=["auth"])
     serialized_storage = storage.serialize()
 
     assert serialized_storage["type"] == "GitHub"
@@ -43,7 +46,7 @@ def test_github_client_property(monkeypatch):
     with context(secrets=dict(GITHUB_ACCESS_TOKEN=credentials)):
         github_client = storage._github_client
     assert github_client
-    github.assert_called_with("ACCESS_TOKEN",)
+    github.assert_called_with("ACCESS_TOKEN")
 
 
 def test_add_flow_to_github_storage():
@@ -87,5 +90,5 @@ def test_get_flow_github(monkeypatch):
     assert f.name not in storage
     flow_location = storage.add_flow(f)
 
-    new_flow = storage.get_flow(flow_location)
+    new_flow = storage.get_flow(flow_location, ref="my_branch")
     assert new_flow.run()

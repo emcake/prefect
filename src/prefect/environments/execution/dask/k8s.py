@@ -45,8 +45,11 @@ class DaskKubernetesEnvironment(Environment):
     - `PREFECT__ENGINE__FLOW_RUNNER__DEFAULT_CLASS`
     - `PREFECT__ENGINE__TASK_RUNNER__DEFAULT_CLASS`
     - `PREFECT__ENGINE__EXECUTOR__DEFAULT_CLASS`
+    - `PREFECT__LOGGING__LEVEL`
     - `PREFECT__LOGGING__LOG_TO_CLOUD`
     - `PREFECT__LOGGING__EXTRA_LOGGERS`
+
+    Note: the logging attributes are only populated if they are not already provided.
 
     Args:
         - min_workers (int, optional): the minimum allowed number of Dask worker pods; defaults to 1
@@ -55,6 +58,9 @@ class DaskKubernetesEnvironment(Environment):
             defaults to False Only used when a custom scheduler spec is not provided. Enabling
             this may cause ClientErrors to appear when multiple Dask workers try to run the
             same Prefect Task.
+            `Warning`:  `work_stealing` if provided won't be appended to your custom
+            `scheduler_spec_file`. If wanted, don't forget to add it in your container env
+            (`DASK_DISTRIBUTED__SCHEDULER__WORK_STEALING`).
         - scheduler_logs (bool, optional): log all Dask scheduler logs, defaults to False
         - private_registry (bool, optional, DEPRECATED): a boolean specifying whether your
             Flow's Docker container will be in a private Docker registry; if so, requires a
@@ -73,8 +79,13 @@ class DaskKubernetesEnvironment(Environment):
         - scheduler_spec_file (str, optional): Path to a scheduler spec YAML file
         - worker_spec_file (str, optional): Path to a worker spec YAML file
         - image_pull_secret (str, optional): optional name of an `imagePullSecret` to use for
-            the scheduler and worker pods. For more information go
+            the scheduler and worker pods. To specify multiple image pull secrets, provide a comma
+            delimited string with no spaces, like `"some-secret,other-secret"`.
+            For more information go
             [here](https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/).
+            `Warning`:  `image_pull_secret` if provided won't be appended to your custom
+            `worker_spec_file` or `scheduler_spec_file`. If you want it, don't forget to add it in
+            your spec files.
         - log_k8s_errors (bool, optional): optional toggle to also log Kubernetes errors that may occur
             using the Prefect logger. Defaults to `False`.
     """
@@ -152,9 +163,11 @@ class DaskKubernetesEnvironment(Environment):
             # Verify environment is running in cluster
             try:
                 config.load_incluster_config()
-            except config.config_exception.ConfigException:
+            except config.config_exception.ConfigException as config_exception:
                 self.logger.error("Environment not currently running inside a cluster")
-                raise EnvironmentError("Environment not currently inside a cluster")
+                raise EnvironmentError(
+                    "Environment not currently inside a cluster"
+                ) from config_exception
 
             v1 = client.CoreV1Api()
             namespace = prefect.context.get("namespace", "default")
@@ -194,9 +207,11 @@ class DaskKubernetesEnvironment(Environment):
         # Verify environment is running in cluster
         try:
             config.load_incluster_config()
-        except config.config_exception.ConfigException:
+        except config.config_exception.ConfigException as config_exception:
             self.logger.error("Environment not currently running inside a cluster")
-            raise EnvironmentError("Environment not currently inside a cluster")
+            raise EnvironmentError(
+                "Environment not currently inside a cluster"
+            ) from config_exception
 
         batch_client = client.BatchV1Api()
 
@@ -380,7 +395,9 @@ class DaskKubernetesEnvironment(Environment):
             pod_spec["imagePullSecrets"].append({"name": namespace + "-docker"})
         elif self.image_pull_secret:
             pod_spec["imagePullSecrets"] = []
-            pod_spec["imagePullSecrets"].append({"name": self.image_pull_secret})
+            secrets = self.image_pull_secret.split(",")
+            for secret_name in secrets:
+                pod_spec["imagePullSecrets"].append({"name": secret_name})
 
         env[0]["value"] = prefect.config.cloud.graphql
         env[1]["value"] = prefect.config.cloud.auth_token
@@ -423,7 +440,9 @@ class DaskKubernetesEnvironment(Environment):
             pod_spec["imagePullSecrets"].append({"name": namespace + "-docker"})
         elif self.image_pull_secret:
             pod_spec["imagePullSecrets"] = []
-            pod_spec["imagePullSecrets"].append({"name": self.image_pull_secret})
+            secrets = self.image_pull_secret.split(",")
+            for secret_name in secrets:
+                pod_spec["imagePullSecrets"].append({"name": secret_name})
 
         # set image
         yaml_obj["spec"]["containers"][0]["image"] = prefect.context.get(
@@ -482,6 +501,10 @@ class DaskKubernetesEnvironment(Environment):
                 "name": "PREFECT__ENGINE__EXECUTOR__DEFAULT_CLASS",
                 "value": "prefect.engine.executors.DaskExecutor",
             },
+        ]
+
+        # Logging env vars
+        log_vars = [
             {
                 "name": "PREFECT__LOGGING__LOG_TO_CLOUD",
                 "value": str(prefect.config.logging.log_to_cloud).lower(),
@@ -503,6 +526,11 @@ class DaskKubernetesEnvironment(Environment):
             env = yaml_obj["spec"]["template"]["spec"]["containers"][0]["env"]
 
         env.extend(env_values)
+
+        # Append logging env vars if not already present
+        for var in log_vars:
+            if not any(d.get("name") == var.get("name") for d in env):
+                env.append(var)
 
         # set image
         yaml_obj["spec"]["template"]["spec"]["containers"][0]["image"] = docker_name
@@ -546,6 +574,10 @@ class DaskKubernetesEnvironment(Environment):
                 "name": "PREFECT__ENGINE__EXECUTOR__DEFAULT_CLASS",
                 "value": "prefect.engine.executors.DaskExecutor",
             },
+        ]
+
+        # Logging env vars
+        log_vars = [
             {
                 "name": "PREFECT__LOGGING__LOG_TO_CLOUD",
                 "value": str(prefect.config.logging.log_to_cloud).lower(),
@@ -567,6 +599,11 @@ class DaskKubernetesEnvironment(Environment):
             env = yaml_obj["spec"]["containers"][0]["env"]
 
         env.extend(env_values)
+
+        # Append logging env vars if not already present
+        for var in log_vars:
+            if not any(d.get("name") == var.get("name") for d in env):
+                env.append(var)
 
         # set image
         yaml_obj["spec"]["containers"][0]["image"] = prefect.context.get(

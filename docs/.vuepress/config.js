@@ -50,6 +50,12 @@ module.exports = {
         githubLabels: ['docs'],
         twitter: true
       }
+    ],
+    [
+      'sitemap',
+      {
+        hostname: 'https://docs.prefect.io'
+      }
     ]
   ],
   themeConfig: {
@@ -74,7 +80,7 @@ module.exports = {
       {
         text: 'API Reference',
         items: [
-          { text: 'Latest (0.13.4)', link: '/api/latest/' },
+          { text: 'Latest (0.13.18)', link: '/api/latest/' },
           { text: '0.12.6', link: '/api/0.12.6/' },
           { text: '0.11.5', link: '/api/0.11.5/' },
           { text: '0.10.7', link: '/api/0.10.7/' },
@@ -111,6 +117,11 @@ module.exports = {
           children: getChildren('docs/api/latest', 'client')
         },
         {
+          title: 'prefect.cli',
+          collapsable: true,
+          children: getChildren('docs/api/latest', 'cli')
+        },
+        {
           title: 'prefect.core',
           collapsable: true,
           children: getChildren('docs/api/latest', 'core')
@@ -126,6 +137,11 @@ module.exports = {
           children: getChildren('docs/api/latest', 'environments')
         },
         {
+          title: 'prefect.run_configs',
+          collapsable: true,
+          children: ['run_configs.md'],
+        },
+        {
           title: 'prefect.tasks',
           collapsable: true,
           children: getChildren('docs/api/latest', 'tasks')
@@ -139,6 +155,11 @@ module.exports = {
           title: 'prefect.agent',
           collapsable: true,
           children: getChildren('docs/api/latest', 'agent')
+        },
+        {
+          title: 'prefect.artifacts',
+          collapsable: true,
+          children: getChildren('docs/api/latest', 'artifacts')
         },
         {
           title: 'prefect.utilities',
@@ -200,17 +221,12 @@ module.exports = {
           ]
         },
         {
-          title: 'Execution Environments',
+          title: 'Flow Run Configuration',
           collapsable: true,
           children: [
-            'execution/overview',
-            'execution/storage_options',
-            'execution/local_environment',
-            'execution/dask_cloud_provider_environment',
-            'execution/dask_k8s_environment',
-            'execution/k8s_job_environment',
-            'execution/fargate_task_environment',
-            'execution/custom_environment'
+            'flow_config/overview',
+            'flow_config/storage',
+            'flow_config/run_configs'
           ]
         },
         {
@@ -222,6 +238,20 @@ module.exports = {
             'agents/docker',
             'agents/kubernetes',
             'agents/fargate'
+          ]
+        },
+        {
+          title: 'Legacy Environments',
+          collapsable: true,
+          children: [
+            'execution/overview',
+            'execution/storage_options',
+            'execution/local_environment',
+            'execution/dask_cloud_provider_environment',
+            'execution/dask_k8s_environment',
+            'execution/k8s_job_environment',
+            'execution/fargate_task_environment',
+            'execution/custom_environment'
           ]
         },
         {
@@ -285,7 +315,7 @@ module.exports = {
         {
           title: 'Task Library',
           collapsable: true,
-          children: getChildren('docs/core', 'task_library')
+          children: ['task_library/overview', 'task_library/contributing']
         },
         {
           title: 'Advanced Tutorials',

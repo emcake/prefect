@@ -23,6 +23,14 @@ if TYPE_CHECKING:
     import docker
 
 
+def multiline_indent(string: str, spaces: int) -> str:
+    """
+    Utility to indent all but the first line in a string to the specified level,
+    especially useful in textwrap.dedent calls where multiline strings are formatted in
+    """
+    return string.replace("\n", "\n" + " " * spaces)
+
+
 class Docker(Storage):
     """
     Docker storage provides a mechanism for storing Prefect flows in Docker
@@ -37,6 +45,25 @@ class Docker(Storage):
     for example, Google's GCR registry allows for registry URLs of the form
     `gcr.io/my-registry/subdir/my-image-name` whereas DockerHub requires the
     registry URL to be separate from the image name.
+
+    Custom modules can be packaged up during build by attaching the files and
+    setting the `PYTHONPATH` to the location of those files. Otherwise the
+    modules can be set independently when using a custom base image prior to the
+    build here.
+
+    ```python
+    Docker(
+        files={
+            # absolute path source -> destination in image
+            "/Users/me/code/mod1.py": "/modules/mod1.py",
+            "/Users/me/code/mod2.py": "/modules/mod2.py",
+        },
+        env_vars={
+            # append modules directory to PYTHONPATH
+            "PYTHONPATH": "$PYTHONPATH:modules/"
+        },
+    )
+    ```
 
     Args:
         - registry_url (str, optional): URL of a registry to push the image to;
@@ -55,8 +82,8 @@ class Docker(Storage):
             populated with a UUID after build
         - env_vars (dict, optional): a dictionary of environment variables to
             use when building
-        - files (dict, optional): a dictionary of files to copy into the image
-            when building. Takes the format of `{'src': 'dest'}`
+        - files (dict, optional): a dictionary of files or directories to copy into
+            the image when building. Takes the format of `{'src': 'dest'}`
         - prefect_version (str, optional): an optional branch, tag, or commit
             specifying the version of prefect you want installed into the container;
             defaults to the version you are currently using or `"master"` if your
@@ -80,6 +107,9 @@ class Docker(Storage):
             if `stored_as_script=True`.
         - stored_as_script (bool, optional): boolean for specifying if the flow has been stored
             as a `.py` file. Defaults to `False`
+        - extra_dockerfile_commands (list[str], optional): list of Docker build commands
+            which are injected at the end of generated DockerFile (before the health checks).
+            Defaults to `None`
         - **kwargs (Any, optional): any additional `Storage` initialization options
 
     Raises:
@@ -106,6 +136,7 @@ class Docker(Storage):
         prefect_directory: str = "/opt/prefect",
         path: str = None,
         stored_as_script: bool = False,
+        extra_dockerfile_commands: List[str] = None,
         **kwargs: Any,
     ) -> None:
         self.registry_url = registry_url
@@ -130,12 +161,13 @@ class Docker(Storage):
         self.flows = dict()  # type: Dict[str, str]
         self._flows = dict()  # type: Dict[str, "prefect.core.flow.Flow"]
         self.local_image = local_image
-        self.extra_commands = []  # type: List[str]
+        self.installation_commands = []  # type: List[str]
         self.ignore_healthchecks = ignore_healthchecks
 
         self.base_url = base_url or os.environ.get("DOCKER_HOST", default_url)
         self.tls_config = tls_config
         self.build_kwargs = build_kwargs or {}
+        self.extra_dockerfile_commands = extra_dockerfile_commands
 
         version = prefect.__version__.split("+")
         if prefect_version is None:
@@ -154,7 +186,7 @@ class Docker(Storage):
             else:
                 # create an image from python:*-slim directly
                 self.base_image = "python:{}-slim".format(python_version)
-                self.extra_commands.append(
+                self.installation_commands.append(
                     "apt update && apt install -y gcc git && rm -rf /var/lib/apt/lists/*"
                 )
         elif base_image and dockerfile:
@@ -167,7 +199,7 @@ class Docker(Storage):
         self.dockerfile = dockerfile
         # we should always try to install prefect, unless it is already installed. We can't
         # determine this until image build time.
-        self.extra_commands.append(
+        self.installation_commands.append(
             f"pip show prefect || "
             f"pip install git+https://github.com/PrefectHQ/prefect.git"
             f"@{self.prefect_version}#egg=prefect[kubernetes]"
@@ -359,7 +391,8 @@ class Docker(Storage):
             dockerfile_path = self.create_dockerfile_object(directory=tempdir)
             client = self._get_client()
 
-            # Verify that a registry url has been provided for images that should be pushed
+            # Verify that a registry url has been provided for images that should be
+            # pushed
             if self.registry_url:
                 full_name = str(PurePosixPath(self.registry_url, self.image_name))
             elif push is True:
@@ -367,6 +400,7 @@ class Docker(Storage):
                     "This Docker storage object has no `registry_url`, and "
                     "will not be pushed.",
                     UserWarning,
+                    stacklevel=2,
                 )
                 full_name = self.image_name
             else:
@@ -428,19 +462,30 @@ class Docker(Storage):
         Returns:
             - str: the absolute file path to the Dockerfile
         """
+        # Either load the base commands from the specified dockerfile or define a FROM
+        if self.dockerfile:
+            with open(self.dockerfile, "r") as contents:
+                base_commands = contents.read()
+        else:
+            base_commands = "FROM {base_image}".format(base_image=self.base_image)
+
         # Generate single pip install command for python dependencies
         pip_installs = "RUN pip install "
         if self.python_dependencies:
             for dependency in self.python_dependencies:
                 pip_installs += "{} ".format(dependency)
 
+        # Write all extra commands that should be run in the image
+        installation_commands = ""
+        for cmd in self.installation_commands:
+            installation_commands += "RUN {}\n".format(cmd)
+
         # Generate ENV variables to load into the image
         env_vars = ""
         if self.env_vars:
-            white_space = " " * 20
-            env_vars = "ENV " + " \\ \n{}".format(white_space).join(
-                "{k}={v}".format(k=k, v=v) for k, v in self.env_vars.items()
-            )
+            # Format with repr to get proper quoting
+            formatted_vars = [f"{k}={v!r}" for k, v in self.env_vars.items()]
+            env_vars = "ENV " + " \\\n    ".join(formatted_vars)
 
         # Copy user specified files into the image
         copy_files = ""
@@ -455,7 +500,12 @@ class Docker(Storage):
                         )
                     )
                 else:
-                    shutil.copy2(src, full_fname)
+                    if os.path.isdir(src):
+                        shutil.copytree(
+                            src=src, dst=full_fname, symlinks=False, ignore=None
+                        )
+                    else:
+                        shutil.copy2(src=src, dst=full_fname)
                 copy_files += "COPY {fname} {dest}\n".format(
                     fname=full_fname.replace("\\", "/") if self.dockerfile else fname,
                     dest=dest,
@@ -470,9 +520,11 @@ class Docker(Storage):
                 with open(flow_path, "wb") as f:
                     cloudpickle.dump(self._flows[flow_name], f)
                 copy_flows += "COPY {source} {dest}\n".format(
-                    source=flow_path.replace("\\", "/")
-                    if self.dockerfile
-                    else "{}.flow".format(clean_name),
+                    source=(
+                        flow_path.replace("\\", "/")
+                        if self.dockerfile
+                        else "{}.flow".format(clean_name)
+                    ),
                     dest=flow_location,
                 )
         else:
@@ -481,10 +533,12 @@ class Docker(Storage):
                     "A `path` must be provided to show where flow `.py` file is stored in the image."
                 )
 
-        # Write all extra commands that should be run in the image
-        extra_commands = ""
-        for cmd in self.extra_commands:
-            extra_commands += "RUN {}\n".format(cmd)
+        # Write final extra user commands that should be run in the image
+        final_commands = (
+            ""
+            if self.extra_dockerfile_commands is None
+            else "\n".join(self.extra_dockerfile_commands)
+        )
 
         # Write a healthcheck script into the image
         with open(
@@ -496,57 +550,40 @@ class Docker(Storage):
         with open(healthcheck_loc, "w") as health_file:
             health_file.write(healthcheck)
 
-        if self.dockerfile:
-            with open(self.dockerfile, "r") as contents:
-                base_commands = textwrap.indent("\n" + contents.read(), prefix=" " * 16)
-        else:
-            base_commands = "FROM {base_image}".format(base_image=self.base_image)
-
-        file_contents = textwrap.dedent(
-            """\
-            {base_commands}
-
-            RUN pip install pip --upgrade
-            {extra_commands}
-            {pip_installs}
-
-            RUN mkdir -p {prefect_dir}/
-            {copy_flows}
-            COPY {healthcheck_loc} {prefect_dir}/healthcheck.py
-            {copy_files}
-
-            {env_vars}
-            """.format(
-                base_commands=base_commands,
-                extra_commands=extra_commands,
-                pip_installs=pip_installs,
-                copy_flows=copy_flows,
-                healthcheck_loc=healthcheck_loc.replace("\\", "/")
-                if self.dockerfile
-                else "healthcheck.py",
-                copy_files=copy_files,
-                env_vars=env_vars,
-                prefect_dir=self.prefect_directory,
-            )
+        # Escape the healthcheck location
+        healthcheck_loc = (
+            healthcheck_loc.replace("\\", "/") if self.dockerfile else "healthcheck.py"
         )
 
-        # append the line that runs the healthchecks
-        # skip over for now if storing flow as file
+        # Generate the command to run the healthcheck
+        healthcheck_run = ""
         if not self.ignore_healthchecks:
-            file_contents += textwrap.dedent(
-                """
-
-                RUN python {prefect_dir}/healthcheck.py '[{flow_file_paths}]' '{python_version}'
-                """.format(
-                    flow_file_paths=", ".join(
-                        ['"{}"'.format(k) for k in self.flows.values()]
-                    ),
-                    python_version=(sys.version_info.major, sys.version_info.minor),
-                    prefect_dir=self.prefect_directory,
-                )
+            flow_file_paths = ", ".join(['"{}"'.format(k) for k in self.flows.values()])
+            python_version = (sys.version_info.major, sys.version_info.minor)
+            healthcheck_run = (
+                f"RUN python {self.prefect_directory}/healthcheck.py "
+                f"'[{flow_file_paths}]' '{python_version}'"
             )
 
-        file_contents = "\n".join(line.lstrip() for line in file_contents.split("\n"))
+        file_contents = textwrap.dedent(
+            f"""
+            {multiline_indent(base_commands, 12)}
+
+            RUN pip install pip --upgrade
+            {multiline_indent(installation_commands, 12)}
+            {pip_installs}
+
+            RUN mkdir -p {self.prefect_directory}/
+            {multiline_indent(copy_flows, 12)}
+            COPY {healthcheck_loc} {self.prefect_directory}/healthcheck.py
+            {multiline_indent(copy_files, 12)}
+
+            {multiline_indent(env_vars, 12)}
+            {multiline_indent(final_commands, 12)}
+            {healthcheck_run}
+            """
+        )
+
         dockerfile_path = os.path.join(directory, "Dockerfile")
         with open(dockerfile_path, "w+") as dockerfile:
             dockerfile.write(file_contents)
@@ -607,16 +644,25 @@ class Docker(Storage):
                 print(line.get("status"), line.get("progress"), end="\r")
         print("")
 
-    def _parse_generator_output(self, generator: Iterable) -> None:
+    @staticmethod
+    def _parse_generator_output(generator: Iterable) -> None:
         """
         Parses and writes a Docker command's output to stdout
         """
         for item in generator:
             item = item.decode("utf-8")
             for line in item.split("\n"):
-                if line:
-                    output = json.loads(line).get("stream") or json.loads(line).get(
-                        "errorDetail", {}
-                    ).get("message")
-                    if output and output != "\n":
-                        print(output.strip("\n"))
+                if not line:
+                    continue
+                parsed = json.loads(line)
+                if not isinstance(parsed, dict):
+                    continue
+                # Parse several possible schemas
+                output = (
+                    parsed.get("stream")
+                    or parsed.get("message")
+                    or parsed.get("errorDetail", {}).get("message")
+                    or ""
+                ).strip("\n")
+                if output:
+                    print(output)

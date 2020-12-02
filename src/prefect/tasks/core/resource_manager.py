@@ -1,6 +1,4 @@
-from typing import Any, Callable, Dict
-
-from toolz import curry
+from typing import Any, Callable, Dict, Union, Set, overload
 
 import prefect
 from prefect import Task, Flow
@@ -10,6 +8,14 @@ from prefect.engine import signals
 
 
 __all__ = ("resource_manager", "ResourceManager")
+
+
+class ResourceInitTask(Task):
+    """Initialize a resource manager class"""
+
+    def __init__(self, resource_class: Callable, **kwargs: Any):
+        super().__init__(**kwargs)
+        self.run = resource_class
 
 
 class ResourceSetupTask(Task):
@@ -61,13 +67,13 @@ class ResourceContext:
     """
 
     def __init__(
-        self, init_task: Task, setup_task: Task, cleanup_task: Task, flow: Flow,
+        self, init_task: Task, setup_task: Task, cleanup_task: Task, flow: Flow
     ):
         self.init_task = init_task
         self.setup_task = setup_task
         self.cleanup_task = cleanup_task
         self._flow = flow
-        self._tasks = set()
+        self._tasks = set()  # type: Set[Task]
 
     def add_task(self, task: Task, flow: Flow) -> None:
         """Add a new task under the resource manager block.
@@ -82,12 +88,12 @@ class ResourceContext:
             )
         self._tasks.add(task)
 
-    def __enter__(self):
+    def __enter__(self) -> Task:
         self.__prev_resource = prefect.context.get("resource")
         prefect.context.update(resource=self)
         return self.setup_task
 
-    def __exit__(self, *args):
+    def __exit__(self, *args: Any) -> None:
         if self.__prev_resource is None:
             prefect.context.pop("resource", None)
         else:
@@ -190,9 +196,11 @@ class ResourceManager:
         self.name = name
         self.init_task_kwargs.setdefault("name", name)
         self.setup_task_kwargs.setdefault("name", f"{name}.setup")
+        self.setup_task_kwargs.setdefault("checkpoint", False)
         self.cleanup_task_kwargs.setdefault("name", f"{name}.cleanup")
         self.cleanup_task_kwargs.setdefault("trigger", resource_cleanup_trigger)
         self.cleanup_task_kwargs.setdefault("skip_on_upstream_skip", False)
+        self.cleanup_task_kwargs.setdefault("checkpoint", False)
 
     def __call__(self, *args: Any, flow: Flow = None, **kwargs: Any) -> ResourceContext:
         if flow is None:
@@ -200,7 +208,7 @@ class ResourceManager:
             if flow is None:
                 raise ValueError("Could not infer an active Flow context.")
 
-        init_task = prefect.task(self.resource_class, **self.init_task_kwargs)(
+        init_task = ResourceInitTask(self.resource_class, **self.init_task_kwargs)(  # type: ignore
             *args, flow=flow, **kwargs
         )
 
@@ -213,14 +221,39 @@ class ResourceManager:
         return ResourceContext(init_task, setup_task, cleanup_task, flow)
 
 
-@curry
+# To support mypy type checking with optional arguments to `resource_manager`,
+# we need to make use of `typing.overload`
+@overload
 def resource_manager(
     resource_class: Callable,
+    *,
     name: str = None,
     init_task_kwargs: dict = None,
     setup_task_kwargs: dict = None,
     cleanup_task_kwargs: dict = None,
 ) -> ResourceManager:
+    pass
+
+
+@overload
+def resource_manager(
+    *,
+    name: str = None,
+    init_task_kwargs: dict = None,
+    setup_task_kwargs: dict = None,
+    cleanup_task_kwargs: dict = None,
+) -> Callable[[Callable], ResourceManager]:
+    pass
+
+
+def resource_manager(
+    resource_class: Callable = None,
+    *,
+    name: str = None,
+    init_task_kwargs: dict = None,
+    setup_task_kwargs: dict = None,
+    cleanup_task_kwargs: dict = None,
+) -> Union[ResourceManager, Callable[[Callable], ResourceManager]]:
     """A decorator for creating a `ResourceManager` object.
 
     Used as a context manager, `ResourceManager` objects create tasks to setup
@@ -295,10 +328,14 @@ def resource_manager(
     a trigger to always run if the `setup` task succeeds, and won't be set as
     a reference task.
     """
-    return ResourceManager(
-        resource_class,
-        name=name,
-        init_task_kwargs=init_task_kwargs,
-        setup_task_kwargs=setup_task_kwargs,
-        cleanup_task_kwargs=cleanup_task_kwargs,
-    )
+
+    def inner(resource_class: Callable) -> ResourceManager:
+        return ResourceManager(
+            resource_class,
+            name=name,
+            init_task_kwargs=init_task_kwargs,
+            setup_task_kwargs=setup_task_kwargs,
+            cleanup_task_kwargs=cleanup_task_kwargs,
+        )
+
+    return inner if resource_class is None else inner(resource_class)

@@ -3,11 +3,14 @@ Functionality for auto-generating markdown documentation.
 
 Each entry in `OUTLINE` is a dictionary with the following key/value pairs:
     - "page" -> (str): relative path to the markdown file this page represents
-    - "classes" -> (list, optional): list of classes to document
+    - "classes" -> (list or dict, optional): list of classes to document. If a
+        dict, the keys are class names and the values are lists of methods to
+        document.
     - "functions" -> (list, optional): list of standalone functions to document
     - "title" -> (str, optional): title of page
     - "top-level-doc" -> (object, optional): module object that contains the
         docstring that will be displayed at the top of the generated page
+    - "experimental" -> (bool = False, optional): whether or not to display the "Experimental" flag at the top of the page
 
 On a development installation of Prefect, run `python generate_docs.py` from inside the `docs/` folder.
 """
@@ -27,7 +30,6 @@ import toml
 import toolz
 from slugify import slugify
 
-import prefect
 from tokenizer import format_code
 
 OUTLINE_PATH = os.path.join(os.path.dirname(__file__), "outline.toml")
@@ -51,6 +53,11 @@ def patch_imports():
         builtins.__import__ = real_import
 
 
+def import_object(name):
+    module, attr = name.rsplit(".", 1)
+    return getattr(importlib.import_module(module), attr)
+
+
 def load_outline(
     outline=outline_config["pages"],
     ext=outline_config.get("extension", ".md"),
@@ -60,41 +67,36 @@ def load_outline(
     for name, data in outline.items():
         fname = os.path.join(prefix or "", name)
         if "module" in data:
-            page = {}
-            page.update(
+            page = dict(
                 page=f"{fname}{ext}",
                 title=data.get("title", ""),
-                classes=[],
-                functions=[],
+                experimental=data.get("experimental", False),
             )
-            module = importlib.import_module(data["module"])
-            page["top-level-doc"] = module
+            module_name = data["module"]
+            page["top-level-doc"] = importlib.import_module(module_name)
 
             # extract documented function objects
-            # note that if one is listed as an attribute of a submodule
-            # we attempt to import the submodule and extract the function there
-            for fun in data.get("functions", []):
-                if "." in fun:
-                    parts = fun.split(".")
-                    submod = ".".join([module.__name__, parts[0]])
-                    module = importlib.import_module(submod)
-                    obj = getattr(module, parts[1])
-                else:
-                    obj = getattr(module, fun)
-                page["functions"].append(obj)
+            page["functions"] = [
+                import_object(f"{module_name}.{fun}")
+                for fun in data.get("functions", [])
+            ]
 
             # extract documented classes
-            # note that if one is listed as an attribute of a submodule
-            # we attempt to import the submodule and extract the class there
-            for clss in data.get("classes", []):
-                if "." in clss:
-                    parts = clss.split(".")
-                    submod = ".".join([module.__name__, parts[0]])
-                    module = importlib.import_module(submod)
-                    obj = getattr(module, parts[1])
-                else:
-                    obj = getattr(module, clss)
-                page["classes"].append(obj)
+            classes = data.get("classes", [])
+            if isinstance(classes, dict):
+                page["classes"] = [
+                    (import_object(f"{module_name}.{cls}"), methods)
+                    for cls, methods in classes.items()
+                ]
+            else:
+                page["classes"] = [
+                    (import_object(f"{module_name}.{cls}"), None) for cls in classes
+                ]
+
+            page["commands"] = [
+                import_object(f"{module_name}.{cmd}")
+                for cmd in data.get("commands", [])
+            ]
             OUTLINE.append(page)
         else:
             OUTLINE.extend(load_outline(data, prefix=fname))
@@ -121,26 +123,37 @@ def preprocess(f, remove_partial=True):
     return wrapped
 
 
+VALID_DOCSTRING_SECTIONS = [
+    "Args",
+    "Returns",
+    "Raises",
+    "Example",
+    "Examples",
+    "References",
+]
+
+
 def clean_line(line):
-    line = (
-        line.replace("Args:", "**Args**:")
-        .replace("Returns:", "**Returns**:")
-        .replace("Raises:", "**Raises**:")
-        .replace("Example:", "**Example**:")
-        .replace(".**", ".\n\n**")
-    )
+    for header in VALID_DOCSTRING_SECTIONS:
+        line = line.replace(f"{header}:", f"**{header}**:")
+    line = line.replace(".**", ".\n\n**")
     return line.lstrip()
 
 
 def format_lists(doc):
     "Convenience function for converting markdown lists to HTML for within-table lists"
     lists = re.findall(
-        r"(Args\:|Returns\:|Raises\:)(.*?)\s+(-.*?)(\n\n|$)", doc, re.DOTALL
+        r"(Args\:|Returns\:|Raises\:|References\:)(.*?)\s+(-.*?)(\n\n|$)",
+        doc,
+        re.DOTALL,
     )  # find formatted lists
     ul_tag = '<ul class="args">'
     li_tag = '<li class="args">'
     for section, _, items, ending in lists:
-        if section.startswith(("Returns:", "Raises:")) and ":" not in items:
+        if (
+            section.startswith(("Returns:", "Raises:", "References:"))
+            and ":" not in items
+        ):
             doc = doc.replace(
                 items, f"{ul_tag}{li_tag}" + items.lstrip("- ") + "</li></ul>", 1
             )
@@ -153,7 +166,7 @@ def format_lists(doc):
         for item, descr in list_items:
             block += f"{li_tag}`{item}`:{descr}</li>"
         list_block = f"{ul_tag}{block}</ul>"
-        doc = doc.replace(items + "\n\n", list_block, 1).replace(items, list_block, 1)
+        doc = doc.replace(items + "\n", list_block, 1).replace(items, list_block, 1)
     return doc.replace("\n\nRaises:", "Raises:")
 
 
@@ -199,48 +212,93 @@ def create_methods_table(members, title):
     return table
 
 
+def create_commands_table(commands):
+    import click
+
+    full_commands = []
+    for cmd in commands:
+        full_commands.append((cmd.name, cmd))
+        if hasattr(cmd, "commands"):
+            for subcommand in sorted(cmd.commands):
+                full_commands.append(
+                    (f"{cmd.name} {subcommand}", cmd.commands[subcommand])
+                )
+
+    table = ""
+    for name, cmd in full_commands:
+        with click.Context(cmd) as ctx:
+            table += format_command_doc(name, ctx, cmd)
+    return table
+
+
+def format_command_doc(name, ctx, cmd):
+    table = f"<h3>{name}</h3>\n"
+    help_text = cmd.get_help(ctx).split("\n", 2)[2]
+
+    options = help_text.split("Options:")
+    arguments = options[0].split("Arguments:")
+    if len(arguments) > 1:
+        table += arguments[0]
+
+        block = (
+            "<pre><code>"
+            + "Arguments:"
+            + arguments[1].replace("\n", "<br>").replace("*", r"\*")
+            + "</code></pre>"
+        )
+        table += block
+    else:
+        table += options[0]
+
+    if len(options) > 1:
+        block = (
+            "<pre><code>"
+            + "Options:"
+            + options[1].replace("\n", "<br>").replace("*", r"\*")
+            + "</code></pre>"
+        )
+        table += block
+    return table
+
+
 @preprocess(remove_partial=False)
 def get_call_signature(obj):
     assert callable(obj), f"{obj} is not callable, cannot format signature."
-    # collect data
     try:
-        sig = inspect.getfullargspec(obj)
-    except TypeError:  # if obj is exception
-        sig = inspect.getfullargspec(obj.__init__)
-    args, defaults = sig.args, sig.defaults or []
-    kwonly, kwonlydefaults = sig.kwonlyargs or [], sig.kwonlydefaults or {}
-    varargs, varkwargs = sig.varargs, sig.varkw
+        sig = inspect.signature(obj)
+    except Exception:
+        sig = inspect.signature(obj.__init__)
+    items = []
+    for n, p in enumerate(sig.parameters.values()):
+        # drop self or cls from methods
+        if n == 0 and p.name in ("self", "cls"):
+            continue
+        if p.kind == inspect.Parameter.VAR_POSITIONAL:
+            items.append(f"*{p.name}")
+        elif p.kind == inspect.Parameter.VAR_KEYWORD:
+            items.append(f"**{p.name}")
+        elif p.default is not inspect.Parameter.empty:
+            default = p.default
+            if isinstance(default, MagicMock):
+                mock = default
+                default = mock._mock_name
+                while mock._mock_parent:
+                    default = f"{mock._mock_parent._mock_name}.{default}"
+                    mock = mock._mock_parent
+            elif isinstance(default, str):
+                # force double quotes
+                default = f'"{default}"'
+            else:
+                default = repr(default)
+            items.append((p.name, default))
+        else:
+            items.append(p.name)
+    return items
 
-    if args == []:
-        standalone, kwargs = [], []
-    else:
-        if args[0] in ["cls", "self"]:
-            args = args[1:]  # remove cls or self from displayed signature
 
-        standalone = args[: -len(defaults)] if defaults else args  # true args
-        kwargs = list(zip(args[-len(defaults) :], defaults))  # true kwargs
-
-    varargs = [f"*{varargs}"] if varargs else []
-    varkwargs = [f"**{varkwargs}"] if varkwargs else []
-    if kwonly:
-        kwargs.extend([(kw, default) for kw, default in kwonlydefaults.items()])
-        kwonly = [k for k in kwonly if k not in kwonlydefaults]
-
-    return standalone, varargs, kwonly, kwargs, varkwargs
-
-
-@preprocess(remove_partial=False)
 def format_signature(obj):
-    standalone, varargs, kwonly, kwargs, varkwargs = get_call_signature(obj)
-    add_quotes = lambda s: f'"{s}"' if isinstance(s, str) else s
-    psig = ", ".join(
-        standalone
-        + varargs
-        + kwonly
-        + [f"{name}={add_quotes(val)}" for name, val in kwargs]
-        + varkwargs
-    )
-    return psig
+    items = get_call_signature(obj)
+    return ", ".join(a if isinstance(a, str) else f"{a[0]}={a[1]}" for a in items)
 
 
 @preprocess
@@ -292,12 +350,18 @@ def format_subheader(obj, level=1, in_table=False):
     return call_sig
 
 
-def get_class_methods(obj):
-    members = inspect.getmembers(
-        obj, predicate=lambda x: inspect.isroutine(x) and obj.__name__ in x.__qualname__
-    )
-    public_members = [method for (name, method) in members if not name.startswith("_")]
-    return public_members
+def get_class_methods(obj, methods=None):
+    if methods is None:
+        members = inspect.getmembers(
+            obj,
+            predicate=lambda x: inspect.isroutine(x) and obj.__name__ in x.__qualname__,
+        )
+        public_members = [
+            method for (name, method) in members if not name.startswith("_")
+        ]
+        return public_members
+    else:
+        return [getattr(obj, m) for m in methods]
 
 
 def create_tutorial_notebooks(tutorial):
@@ -362,7 +426,7 @@ if __name__ == "__main__":
         shutil.rmtree("api/latest", ignore_errors=True)
         os.makedirs("api/latest", exist_ok=True)
 
-        ## UPDATE README
+        # UPDATE README
         with open("api/latest/README.md", "w+") as f:
             f.write(
                 textwrap.dedent(
@@ -384,7 +448,8 @@ if __name__ == "__main__":
 
                 # API Reference
 
-                This API reference is automatically generated from Prefect's source code and unit-tested to ensure it's up to date.
+                This API reference is automatically generated from Prefect's source code
+                and unit-tested to ensure it's up to date.
 
                 """
             )
@@ -396,7 +461,7 @@ if __name__ == "__main__":
                 f.write(readme)
                 f.write(auto_generated_footer)
 
-        ## UPDATE CHANGELOG
+        # UPDATE CHANGELOG
         with open("api/latest/changelog.md", "w+") as f:
             f.write(
                 textwrap.dedent(
@@ -415,10 +480,11 @@ if __name__ == "__main__":
 
         for page in OUTLINE:
             # collect what to document
-            fname, classes, fns = (
+            fname, classes, fns, cmds = (
                 page["page"],
                 page.get("classes", []),
                 page.get("functions", []),
+                page.get("commands", []),
             )
             fname = f"api/latest/{fname}"
             directory = os.path.dirname(fname)
@@ -429,14 +495,44 @@ if __name__ == "__main__":
                 f.write(front_matter)
                 title = page.get("title")
                 if title:  # this would be a good place to have assignments
-                    f.write(f"# {title}\n---\n")
+                    experimental = page.get("experimental")
+                    if experimental:
+                        f.write(
+                            f"""# {title}\n
+::: warning Experimental
+<div class="experimental-warning">
+<svg
+    aria-hidden="true"
+    focusable="false"
+    role="img"
+    xmlns="http://www.w3.org/2000/svg"
+    viewBox="0 0 448 512"
+    >
+<path
+fill="#e90"
+d="M437.2 403.5L320 215V64h8c13.3 0 24-10.7 24-24V24c0-13.3-10.7-24-24-24H120c-13.3 0-24 10.7-24 24v16c0 13.3 10.7 24 24 24h8v151L10.8 403.5C-18.5 450.6 15.3 512 70.9 512h306.2c55.7 0 89.4-61.5 60.1-108.5zM137.9 320l48.2-77.6c3.7-5.2 5.8-11.6 5.8-18.4V64h64v160c0 6.9 2.2 13.2 5.8 18.4l48.2 77.6h-172z"
+>
+</path>
+</svg>
+
+<div>
+The functionality here is experimental, and may change between versions without notice. Use at your own risk.
+</div>
+</div>
+:::
+
+---\n
+"""
+                        )
+                    else:
+                        f.write(f"# {title}\n---\n")
 
                 top_doc_obj = page.get("top-level-doc")
                 if top_doc_obj is not None:
                     top_doc = inspect.getdoc(top_doc_obj)
                     if top_doc is not None:
                         f.write(top_doc + "\n")
-                for obj in classes:
+                for obj, methods in classes:
                     f.write(format_subheader(obj))
 
                     f.write(format_doc(obj) + "\n\n")
@@ -444,12 +540,14 @@ if __name__ == "__main__":
                         f.write("\n")
                         continue
 
-                    public_members = get_class_methods(obj)
+                    public_members = get_class_methods(obj, methods)
                     f.write(create_methods_table(public_members, title="methods:"))
                     f.write("\n---\n<br>\n\n")
 
                 if fns:
                     f.write("\n## Functions\n")
+
                 f.write(create_methods_table(fns, title="top-level functions:"))
+                f.write(create_commands_table(cmds))
                 f.write("\n")
                 f.write(auto_generated_footer)

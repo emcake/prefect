@@ -29,6 +29,7 @@ services:
       HASURA_GRAPHQL_ENABLE_CONSOLE: "true"
       HASURA_GRAPHQL_SERVER_PORT: "3000"
       HASURA_GRAPHQL_QUERY_PLAN_CACHE_SIZE: 100
+      HASURA_GRAPHQL_LOG_LEVEL: "warn"
     networks:
       - prefect-server
     restart: "always"
@@ -44,6 +45,7 @@ services:
       PREFECT_SERVER__DATABASE__CONNECTION_URL: ${DB_CONNECTION_URL}
       PREFECT_SERVER__HASURA__ADMIN_SECRET: ${PREFECT_SERVER__HASURA__ADMIN_SECRET:-hasura-secret-admin-secret}
       PREFECT_SERVER__HASURA__HOST: hasura
+      PREFECT_CORE_VERSION: ${PREFECT_CORE_VERSION:-"UNKNOWN"}
     networks:
       - prefect-server
     restart: "always"
@@ -83,7 +85,7 @@ services:
       - "${UI_HOST_PORT:-8080}:8080"
     command: "/intercept.sh"
     environment:
-      PREFECT_SERVER__GRAPHQL_URL: ${GRAPHQL_URL:-http://localhost:4200/graphql}
+      PREFECT_SERVER__APOLLO_URL: ${APOLLO_URL:-http://localhost:4200/graphql}
     networks:
       - prefect-server
     restart: "always"

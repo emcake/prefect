@@ -36,7 +36,7 @@ extras = {
         "azureml-sdk >= 1.0.65, < 1.1",
         "azure-cosmos >= 3.1.1, <3.2",
     ],
-    "dask_cloudprovider": ["dask_cloudprovider >= 0.2.0, < 1.0"],
+    "dask_cloudprovider": ["dask_cloudprovider[aws] >= 0.2.0, < 1.0"],
     "dev": dev_requires + test_requires,
     "dropbox": ["dropbox ~= 9.0"],
     "ge": ["great_expectations >= 0.11.1"],
@@ -45,12 +45,14 @@ extras = {
         "google-cloud-storage >= 1.13, < 2.0",
     ],
     "github": ["PyGithub >= 1.51, < 2.0"],
+    "gitlab": ["python-gitlab >= 2.5.0, < 3.0"],
     "google": [
         "google-cloud-bigquery >= 1.6.0, < 2.0",
         "google-cloud-storage >= 1.13, < 2.0",
     ],
     "gsheets": ["gspread >= 3.6.0"],
     "jira": ["jira >= 2.0.0"],
+    "jupyter": ["papermill >= 2.2.0", "nbconvert >= 6.0.7"],
     "kubernetes": ["kubernetes >= 9.0.0a1, <= 11.0.0b2", "dask-kubernetes >= 0.8.0"],
     "pandas": ["pandas >= 1.0.1"],
     "postgres": ["psycopg2-binary >= 2.8.2"],
@@ -71,6 +73,11 @@ if sys.version_info < (3, 6):
 
 extras["all_extras"] = sum(extras.values(), [])
 
+# CI extras to control dependencies for tests
+extras["test_ci"] = sum(extras.values(), [])
+extras["test_ci"] = [
+    r for r in extras["test_ci"] if not r.startswith("dask_cloudprovider")
+]
 
 cmdclass = {
     "verify_version": VerifyVersionCommand,

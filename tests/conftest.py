@@ -1,13 +1,22 @@
 import os
 import tempfile
+import sys
 from unittest.mock import MagicMock
 
 import pytest
+
+if sys.platform != "win32":
+    # Fix for https://github.com/dask/distributed/issues/4168
+    import multiprocessing.popen_spawn_posix  # noqa
 from distributed import Client
 
 import prefect
 from prefect.engine.executors import DaskExecutor, LocalDaskExecutor, LocalExecutor
 from prefect.utilities import configuration
+
+
+# Set the prefect module to display debug level logs during tests
+prefect.utilities.logging.get_logger().setLevel("DEBUG")
 
 
 @pytest.fixture(autouse=True)
@@ -35,13 +44,15 @@ def prefect_home_dir():
 # ----------------
 @pytest.fixture(scope="session")
 def mthread():
-    "Multi-threaded executor"
-    with Client(processes=False) as client:
+    "Multi-threaded executor using dask distributed"
+    with Client(
+        processes=False,
+        scheduler_port=0,
+        dashboard_address=":0",
+        n_workers=1,
+        threads_per_worker=2,
+    ) as client:
         yield DaskExecutor(client.scheduler.address)
-        try:
-            client.shutdown()
-        except:
-            pass
 
 
 @pytest.fixture()
@@ -53,29 +64,39 @@ def local():
 @pytest.fixture()
 def sync():
     "Synchronous dask (not dask.distributed) executor"
-    yield LocalDaskExecutor()
+    yield LocalDaskExecutor(scheduler="sync")
+
+
+@pytest.fixture()
+def mproc_local():
+    "Multiprocessing executor using local dask (not distributed cluster)"
+    yield LocalDaskExecutor(scheduler="processes")
 
 
 @pytest.fixture(scope="session")
 def mproc():
-    "Multi-processing executor"
-    with Client(processes=True) as client:
+    "Multi-processing executor using dask distributed"
+    with Client(
+        processes=True,
+        scheduler_port=0,
+        dashboard_address=":0",
+        n_workers=2,
+        threads_per_worker=1,
+    ) as client:
         yield DaskExecutor(client.scheduler.address)
-        try:
-            client.shutdown()
-        except:
-            pass
 
 
 @pytest.fixture()
-def _switch(mthread, local, sync, mproc):
+def _switch(mthread, local, sync, mproc, mproc_local):
     """
     A construct needed so we can parametrize the executor fixture.
 
     This isn't straightforward since each executor needs to be initialized
     in slightly different ways.
     """
-    execs = dict(mthread=mthread, local=local, sync=sync, mproc=mproc)
+    execs = dict(
+        mthread=mthread, local=local, sync=sync, mproc=mproc, mproc_local=mproc_local
+    )
     return lambda e: execs[e]
 
 
@@ -160,6 +181,12 @@ def server_api():
     with prefect.utilities.configuration.set_temporary_config(
         {"cloud.api": "https:/localhost:4200", "backend": "server"}
     ):
+        yield
+
+
+@pytest.fixture()
+def running_with_backend():
+    with prefect.context({"running_with_backend": True}):
         yield
 
 
